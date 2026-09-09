@@ -23,7 +23,8 @@ import setupAccount from '../steps/setup-account.js';
 import testSetup from '../steps/test-setup.js';
 import runInteractiveUpdate from '../steps/update-interactive.js';
 import runFlagUpdate, { parseUpdateFlags, UPDATE_FLAGS } from '../steps/update-flags.js';
-import { SITE_URL, CALENDLY_URL, CLI_NAME } from '../lib/config.js';
+import { SITE_URL, CALENDLY_URL, CLI_NAME, DEMO_REPO, DEMO_REPO_SSH_URL } from '../lib/config.js';
+import { cloneDemoRepo, DEMO_DIR_NAME } from '../lib/demo-repo.js';
 import { isInteractive, isAgent, detectAgent, agentLabel } from '../lib/env.js';
 import { buildAgentPlan } from '../lib/agent-plan.js';
 import { getSdkWriter } from '../lib/sdk-writers/index.js';
@@ -362,6 +363,86 @@ function copyToClipboard(text) {
   return false;
 }
 
+/**
+ * The welcome screen's [d] key: set up on the demo repo instead of the
+ * user's own code.
+ *
+ * Does what we used to print and ask them to type:
+ *
+ *     git clone git@github.com:restlesshq/demo.git && cd demo && npx restless init
+ *
+ * The `init` half isn't a second process - we chdir into the clone and let
+ * this run continue into the normal setup, so the demo gets the same screens,
+ * the same debug log, and the same version of the CLI they already invoked.
+ *
+ * Returns the clone directory, or null when we couldn't get there (git
+ * missing, no network, nowhere to put it) - having printed the two commands
+ * to run by hand. The caller exits on null.
+ */
+function cloneDemoAndEnter() {
+  console.log('');
+  console.log(`  ${bold('Trying this on a demo repo.')}`);
+  console.log('');
+  console.log(`  ${dim(`We'll clone ${DEMO_REPO} and run setup in there, so you can`)}`);
+  console.log(`  ${dim('watch the whole thing without it touching your own code.')}`);
+  console.log('');
+
+  const parentDir = process.cwd();
+  const spinner = startSpinner(`Cloning ${DEMO_REPO}…`);
+  let result;
+  try {
+    result = cloneDemoRepo({
+      parentDir,
+      onAttempt: (url) => spinner.update(`Cloning ${url}…`),
+    });
+  } finally {
+    spinner.stop();
+  }
+  debug.log('init.demo-repo', {
+    ok: result.ok,
+    reason: result.reason,
+    reused: result.reused,
+    dir: result.dir,
+    url: result.url,
+    attempts: result.attempts,
+  });
+
+  if (!result.ok) {
+    console.log('');
+    if (result.reason === 'no-git') {
+      console.log(`  ${red('✗')} ${bold("Couldn't find git")}, so we can't clone the demo repo.`);
+    } else if (result.reason === 'no-dir') {
+      console.log(`  ${red('✗')} ${bold('Nowhere to put the clone')} - ${cyan('./demo')} and its siblings are taken.`);
+    } else {
+      console.log(`  ${red('✗')} ${bold("Couldn't clone the demo repo.")}`);
+      for (const attempt of result.attempts || []) {
+        console.log(`    ${dim(`${attempt.url}: ${attempt.error || 'failed'}`)}`);
+      }
+    }
+    console.log('');
+    console.log(`  Clone it yourself and run setup there:`);
+    console.log('');
+    console.log(`    ${cyan(`git clone ${DEMO_REPO_SSH_URL}`)}`);
+    console.log(`    ${cyan(`cd ${DEMO_DIR_NAME} && npx ${CLI_NAME} init`)}`);
+    console.log('');
+    return null;
+  }
+
+  // `cd demo`: everything downstream reads the cwd - the OAS scan, the SDK
+  // install target, where `.restless/` lands. The path guard is re-pointed
+  // with it so its ceiling is the demo clone rather than the repo the user
+  // happened to be standing in when they pressed [d].
+  process.chdir(result.dir);
+  setGitRoot(findGitRoot(result.dir) || result.dir);
+
+  console.log('');
+  const shown = path.relative(parentDir, result.dir) || result.dir;
+  if (result.reused) console.log(`  ${green('✓')} Using the demo repo you already have at ${cyan(shown)}`);
+  else console.log(`  ${green('✓')} Cloned into ${cyan(shown)}`);
+  console.log('');
+  return result.dir;
+}
+
 function readVersion() {
   try {
     const pkgPath = path.join(PKG_DIR, 'package.json');
@@ -501,6 +582,11 @@ if (command === '--version' || command === '-v' || command === 'version') {
   await debug.flushAndExit(0);
 
 } else if (command === 'init' || command === 'setup' || command === 'supercharge') {
+  // Set when the user picked the demo repo at the welcome screen ([d]): the
+  // clone we chdir'd into, so the screens below can say where setup is
+  // running. Null for an ordinary run in the user's own repo.
+  let demoDir = null;
+
   // ── Welcome screen ────────────────────────────────────────────────────
   // Clear viewport + scrollback so the welcome starts at the top of the
   // terminal, matching where every subsequent screen lands after each
@@ -588,11 +674,12 @@ if (command === '--version' || command === '-v' || command === 'version') {
   process.stdout.write('\n');         // start subsequent output on a fresh line
 
   if (welcomeKey === 'd' || welcomeKey === 'D') {
-    console.log('');
-    console.log(`  ${dim('Demo repo flow is coming soon. In the meantime, clone')}`);
-    console.log(`  ${dim(`https://github.com/restlessai/demo and run \`npx ${CLI_NAME} init\` there.`)}`);
-    console.log('');
-    await debug.flushAndExit(0);
+    // Clone the demo repo, cd into it, and fall through into the same setup
+    // ENTER would have started - just pointed at the demo instead of their
+    // own code. Nothing to do but leave when the clone didn't come down;
+    // cloneDemoAndEnter has already printed the commands to run by hand.
+    demoDir = cloneDemoAndEnter();
+    if (!demoDir) await debug.flushAndExit(1);
   }
 
   if (welcomeKey === 'h' || welcomeKey === 'H') {
@@ -633,6 +720,14 @@ if (command === '--version' || command === '-v' || command === 'version') {
     // setup starts.
     plan.drawInitial();
     console.log('');
+    // The welcome screen said what it cloned, but that screen is cleared by
+    // now - and cleared again on the way to the alternatives picker. Part of
+    // the header rather than one call site, so "which repo is this touching?"
+    // is answerable from whichever screen the user is looking at.
+    if (demoDir) {
+      console.log(`  ${dim('Setting up on the demo repo at')} ${cyan(`./${path.basename(demoDir)}`)}`);
+      console.log('');
+    }
   }
 
   drawSetupHeader();
