@@ -438,6 +438,24 @@ describe('uploadPendingArtifacts', () => {
     expect(res.settings).toBe('uploaded');
   });
 
+  it("quotes the server's reason, so an oversized spec reads as one", async () => {
+    // "HTTP 413" alone sent people looking for a network fault. The body is
+    // the only part that says what to do about it.
+    writeProject();
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 413,
+        text: async () =>
+          '{"error":"oas_raw is 3091773 bytes, over the 8388608 byte limit"}',
+      })
+      .mockResolvedValueOnce({ ok: true });
+    const res = await mod.uploadPendingArtifacts({ rootDir: tmp, projectId: 'p-1', setupKey: 's-1', fetchImpl });
+    expect(res.oas).toBe('failed');
+    expect(res.error).toContain('HTTP 413');
+    expect(res.error).toContain('over the 8388608 byte limit');
+  });
+
   it('reports none when there is no spec on disk', async () => {
     saveSettings(tmp, { version: 1, apis: [{ id: 'a', name: 'Pets', rootDir: '.', projectId: 'p-1' }] });
     const fetchImpl = vi.fn().mockResolvedValue({ ok: true });
