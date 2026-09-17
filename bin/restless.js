@@ -23,7 +23,7 @@ import setupAccount from '../steps/setup-account.js';
 import testSetup from '../steps/test-setup.js';
 import runInteractiveUpdate from '../steps/update-interactive.js';
 import runFlagUpdate, { parseUpdateFlags, UPDATE_FLAGS } from '../steps/update-flags.js';
-import { SITE_URL, CALENDLY_URL, CLI_NAME, DEMO_REPO, DEMO_REPO_SSH_URL } from '../lib/config.js';
+import { SITE_URL, CALENDLY_URL, CLI_NAME, DEMO_REPO, DEMO_REPO_SSH_URL, MAX_OAS_BYTES } from '../lib/config.js';
 import { cloneDemoRepo, DEMO_DIR_NAME } from '../lib/demo-repo.js';
 import { isInteractive, isAgent, detectAgent, agentLabel } from '../lib/env.js';
 import { buildAgentPlan } from '../lib/agent-plan.js';
@@ -1321,8 +1321,10 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(1);
   }
   let oasDoc;
+  let oasText;
   try {
-    oasDoc = JSON.parse(fs.readFileSync(oasAbs, 'utf8'));
+    oasText = fs.readFileSync(oasAbs, 'utf8');
+    oasDoc = JSON.parse(oasText);
   } catch (err) {
     console.log(red(`\n  ✗ ${oasFlag} is not valid JSON: ${err.message}\n`));
     console.log(dim('  Fix the spec and re-run - the SDK and the dashboard both parse this file.\n'));
@@ -1340,6 +1342,18 @@ if (command === '--version' || command === '-v' || command === 'version') {
     console.log(`  Set ${cyan('servers[0].url')} to the API's real public URL - ask your user if you can't`);
     console.log(`  confirm it - or use a relative mount path like ${cyan('"/"')} if no public URL exists.`);
     console.log(dim(`  Intentional? Re-run with --allow-local-servers.\n`));
+    await debug.flushAndExit(1);
+  }
+
+  // Checked here, not at upload time: an agent can still trim the spec now,
+  // where at claim time the user just hears their new project has none.
+  const oasBytes = Buffer.byteLength(oasText, 'utf8');
+  if (oasBytes > MAX_OAS_BYTES) {
+    const mb = (n) => `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    console.log(red(`\n  ✗ ${oasFlag} is ${mb(oasBytes)} - over the ${mb(MAX_OAS_BYTES)} the dashboard accepts.`));
+    console.log(`  A spec this size won't upload, so the project would claim without one.`);
+    console.log(`  Trim it and re-run: drop unused schemas, or split the API into`);
+    console.log(`  more than one project and register each spec separately.\n`);
     await debug.flushAndExit(1);
   }
 
@@ -1544,7 +1558,11 @@ if (command === '--version' || command === '-v' || command === 'version') {
       console.log(`  ${green('✓')} This project is already claimed.`);
       console.log(`  ${dim(`To push a spec change to the dashboard, run ${cyan(`npx ${CLI_NAME} update`)}.`)}`);
     } else if (artifacts.oas === 'failed') {
-      console.log(`  ${yellow('!')} ${artifacts.error || 'OAS upload failed.'} The project will claim without a spec.`);
+      // Name the remedy: this used to be a lone warning above a claim URL that
+      // looked successful, so the project stayed specless indefinitely.
+      console.log(`  ${yellow('!')} ${artifacts.error || 'OAS upload failed.'}`);
+      console.log(`  ${bold('The project will claim without a spec.')} Fix the error above, then after`);
+      console.log(`  claiming run ${cyan(`npx ${CLI_NAME} update`)} to push it - nothing else retries this.`);
     }
     console.log(`  ${bold('Open this to claim your project:')}`);
     console.log(`  ${cyan(loginUrl)}`);
