@@ -365,13 +365,18 @@ one for what telemetry sends and one for `npx restless telemetry disable`.
 1. `lib/user-config.js` + tests — no behavior change, nothing wired.
 2. `lib/telemetry.js` + `schemas/telemetry.schema.json` + both test files — still not
    wired, still no network.
-3. `lib/debug.js` async hooks + `bin/restless.js` wiring, **with the endpoint defaulting
-   to off** (ship it behind `RESTLESS_TELEMETRY_FORCE=1`) so it can go out with a release
-   and be exercised by us before it is exercised by anyone else.
+3. `lib/debug.js` async hooks + `bin/restless.js` wiring.
 4. Step and error instrumentation.
-5. Docs, README, first-run notice, and flip the default on — **only once
-   `plans/backend-telemetry.md` is deployed**. A CLI that POSTs into a 404 for a week is
-   invisible, but it is also a week of data we cannot get back.
+5. Docs, README, first-run notice.
+
+**Do not publish to npm until `plans/backend-telemetry.md` is deployed.** Telemetry is on
+by default the moment a published install runs, so a release that lands ahead of the
+ingest route spends that time POSTing into a 404 — invisible, and data we cannot get
+back. An earlier draft of this plan enforced that with a code-level rollout gate; that
+was dropped deliberately in favour of release control, which is the owner's to manage.
+
+`RESTLESS_TELEMETRY_FORCE=1` remains, but only for its other job: overriding the
+linked-install rule (§4.5) so the real send path can be exercised from a checkout.
 
 ## 9. Decisions I need from you
 

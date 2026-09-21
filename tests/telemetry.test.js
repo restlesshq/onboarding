@@ -96,12 +96,12 @@ describe('opt-out precedence', () => {
     expect(forced.telemetry.isSending()).toBe(true);
   });
 
-  it('is off by default while the rollout gate is closed', async () => {
+  it('is on by default in a published install', async () => {
     const t = await fresh();
     restore = t.restore;
     t.telemetry.init({ argv: process.argv });
-    expect(t.telemetry.isEnabled()).toBe(false);
-    expect(t.telemetry.describeStatus().reason).toBe('not-yet-enabled');
+    expect(t.telemetry.isSending()).toBe(true);
+    expect(t.telemetry.describeStatus().reason).toBe('default-on');
   });
 });
 

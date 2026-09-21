@@ -54,7 +54,7 @@ debug.attachExitHandlers();
 // ── Anonymous usage telemetry ─────────────────────────────────────────────
 // Opt-out, disclosed once, enum-only - see `lib/telemetry.js` for exactly
 // what can leave this machine, and `docs/telemetry.md` for the user-facing
-// version. Off by default until the ingest endpoint ships.
+// version.
 //
 // Registered as a finalize hook so it rides the exit path debug.js already
 // owns: a normal return, `flushAndExit`, `beforeExit`, an uncaught throw,
@@ -1829,7 +1829,6 @@ if (command === '--version' || command === '-v' || command === 'version') {
       'opted-out': `you ran \`${CLI_NAME} telemetry disable\``,
       forced: 'RESTLESS_TELEMETRY_FORCE=1 is set',
       'linked-install': 'this is a local checkout or npm link, not a published install',
-      'not-yet-enabled': 'not switched on yet in this release',
       'default-on': 'on by default; opt out any time',
     }[reason] || reason;
 

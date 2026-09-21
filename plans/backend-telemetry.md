@@ -411,8 +411,9 @@ recurring five.
    documents by hand against `plans/cli-telemetry.md` §3's never-collected list. Grep the stored
    documents for `/`, `\`, `=`, `http`, and anything path- or key-shaped. Finding nothing
    is the acceptance test for this whole project.
-5. Only then tell the CLI owner to flip the client default on
-   (`plans/cli-telemetry.md` §8, commit 5).
+5. Only then tell the CLI owner the route is live. The client is already written and
+   defaults to on; it is held back by not publishing to npm, so "live" is their cue to
+   release (`plans/cli-telemetry.md` §8).
 6. Build the five panels against real data.
 
 ## 10. Do not
