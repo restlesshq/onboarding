@@ -1,11 +1,11 @@
 # Plan: telemetry ingest for the Restless dashboard (backend)
 
-**Hand this to a dedicated agent working in the dashboard repo.** It is written to stand
+**Hand this to a dedicated agent working in `restlesshq/app`.** It is written to stand
 alone; you should not need the conversation it came from.
 
-Companion document: `plans/cli-telemetry.md` in the `restlesshq/onboarding` repo (the
-`restless` npm package) describes the client that produces this data. Read it before
-writing the route — particularly §3 (what is collected) and §7 (transport).
+Companion document: `plans/cli-telemetry.md` in `restlesshq/onboarding` (the `restless` npm
+package) describes the client that produces this data. Read it before writing the route —
+particularly §3 (what is collected) and §7 (transport).
 
 ---
 
@@ -18,39 +18,75 @@ spec, installs `@restlessai/sdk`, and registers a project against this dashboard
 It is adding anonymous usage telemetry, modelled on
 [Vercel CLI Telemetry](https://vercel.com/docs/cli/about-telemetry): opt-out, disclosed on
 first run, enum-only payloads, nothing that could contain code, paths, prompts, or
-identities. Your job is the receiving end.
+identities. Your job is the receiving end plus the staff-facing view of it.
 
-**What the CLI already does today**, which tells you the conventions to follow:
+The dashboard, as of `restlesshq/app@2b34998`:
 
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /api/projects/init` | Registers a project from a write-key hash; returns `project_id` + `setup_key`. Already accepts `setup_source` / `setup_agent` provenance. |
-| `POST /api/projects/:id/oas` | Spec upload (size-capped; the CLI mirrors the cap as `MAX_OAS_BYTES`). |
-| `POST /api/projects/:id/settings`, `/sync`, `/context` | Settings + context sync, device-token authenticated. |
-| `POST /api/debug` | Full debug-log upload, opt-in via `--debug`. |
-| `POST /api/logs/:requestId/track` | The existing fire-and-forget event ping for the auto-fix flow. |
-| `POST /api/auth/cli/start`, `GET /api/auth/cli/check` | Device-auth handshake; tokens last 24h. |
+- Next.js App Router. API routes in `src/app/api/`, models in `src/models/`.
+- **MongoDB via Mongoose** (`@/lib/mongoose`, `dbConnect()`). Not SQL.
+- Staff pages live under `src/app/admin/*` and `src/app/debug/*`, both wrapped in
+  `GodShell` (`src/components/admin/GodShell.tsx`), which gates on
+  `requireStaffSessionOr404()` from `src/lib/debugAuth.ts` — a next-auth session whose
+  email is in the `GODS` env var, defaulting to `greg@restless.ai`. Non-staff get a
+  framework 404, never a 403, so the pages' existence stays invisible.
+- `src/lib/setupProvenance.ts` holds the `AGENT_SLUG` regex the CLI mirrors in
+  `lib/env.js`. `Project.metricsId` is what the CLI calls `projectId`.
 
-`POST /api/telemetry` is the new one. It is closest in spirit to
-`/api/logs/:requestId/track` — unauthenticated, fire-and-forget, must never make a caller
-wait — but it arrives once per CLI run with a batch of events instead of one ping.
+The closest existing thing to what you are building is **`POST /api/debug`**
+(`src/app/api/debug/route.ts`) feeding the staff page at `/debug`. Same CLI, same
+unauthenticated ingest, same staff-gated read. **Read that route before writing yours** —
+its header comment enumerates the exact defense-in-depth rules this plan asks for, already
+implemented: 1 MB body cap rejected before parse, strict shape with everything else
+dropped before storage, per-entry length clamps, no GET/LIST on the ingest path, and a
+response that never echoes stored content so it cannot be used as an oracle. Your route is
+that route with a different schema and tighter validation.
 
-**Assumptions to verify before you start** (I planned this from the CLI side and have not
-read the dashboard repo):
+## 2. Read this first: the funnel already half-exists
 
-- It is a Next.js app with App Router API routes under `app/api/`.
-- There is a `projects` table whose id the dashboard calls `metricsId` and the CLI calls
-  `projectId`.
-- `app/src/lib/setupProvenance.ts` exists and holds the `AGENT_SLUG` regex
-  (`/^[a-z0-9][a-z0-9-]{0,31}$/`) the CLI mirrors in `lib/env.js`.
+`POST /api/projects/[projectId]/setup-progress` already exists, is tested
+(`route.test.ts`), and records per-step setup funnel data onto the durable
+`KeyRegistration` row. `src/lib/setupProgress.ts` defines the wire contract:
+`SETUP_STEPS = [welcome, generate_oas, install_sdk, test, account]`, statuses
+`started | done | failed`, and `furthestKnownStep` for "how far did they get". It is
+surfaced to staff today at `/admin/unclaimed`.
 
-If any of those are wrong, adapt and say so in your write-up — do not force the plan.
+**The CLI never calls it.** There is no reference to `setup-progress` anywhere in
+`restlesshq/onboarding` — I grepped the whole package. The server half was built and the
+client half was not wired up (or was removed).
 
-## 2. The contract
+This matters more than anything else in this document, because it means the single most
+valuable query in §7 — the `init` funnel — may not need new telemetry at all. Before you
+build anything:
 
-**`schemas/telemetry.schema.json` in the `restlesshq/onboarding` repo is the source of
-truth for the payload.** Read it, do not reconstruct it from this document. If it does not
-exist yet, the CLI work has not landed; coordinate rather than guessing a shape.
+1. **Confirm the finding.** Re-grep both repos. If some code path does call it, most of
+   this section is moot.
+2. **Raise it with the CLI owner**, and settle which of the two mechanisms owns the funnel.
+   They are not interchangeable:
+
+   | | `setup-progress` | new `/api/telemetry` |
+   | --- | --- | --- |
+   | Auth | `setup_key`, sha256 + constant-time compare | none |
+   | Identity | joined to a project and a lead email | anonymous, unjoinable |
+   | Scope | `init` only, pre-claim | every command, every run |
+   | Storage | `KeyRegistration.setupProgress` | new collection |
+
+   `setup-progress` answers "did *this customer's* setup stall, and should we email them".
+   Telemetry answers "what fraction of all runs stall at `install_sdk`, on which Node
+   version". Both are worth having. Neither is a substitute for the other.
+3. **Do not quietly reimplement one inside the other.** The likely right outcome is: wire
+   the CLI up to `setup-progress` (a small change in `restlesshq/onboarding`, and it is
+   already-built server capability going unused), *and* ship anonymous telemetry for the
+   broader questions. But that is the CLI owner's call to make with the facts in front of
+   them, not yours to assume.
+
+If the decision is to wire up `setup-progress`, reuse `SETUP_STEPS` rather than the step
+enum in `plans/cli-telemetry.md` §3 — one spelling of a step name across both systems.
+
+## 3. The contract
+
+**`schemas/telemetry.schema.json` in `restlesshq/onboarding` is the source of truth for
+the payload.** Read it; do not reconstruct it from this document. If it does not exist
+yet, the CLI work has not landed — coordinate rather than guessing a shape.
 
 Summary, so you can start designing storage:
 
@@ -76,176 +112,250 @@ Summary, so you can start designing storage:
   },
   "events": [
     { "event": "command", "command": "init", "flags": ["--agent"] },
-    { "event": "step", "step": "generate-oas", "outcome": "ok", "durationMs": 21044 },
+    { "event": "step", "step": "generate_oas", "outcome": "ok", "durationMs": 21044 },
     { "event": "timings", "totalMs": 48213,
       "byKind": { "ai": 30112, "exec": 8020, "net": 1400, "scan": 900, "wait": 7000, "anim": 781 } },
     { "event": "detect", "language": "javascript", "framework": "fastify", "oasSourceKind": "ai" },
-    { "event": "error", "code": "oas-upload-failed", "step": "generate-oas" }
+    { "event": "error", "code": "oas-upload-failed", "step": "generate_oas" }
   ]
 }
 ```
 
-Every string field above is drawn from a closed allowlist on the client. **Do not trust
-that.** The client is a published npm package that anyone can fork, patch, or replay — see
-§5.
+Every string field is drawn from a closed allowlist on the client. **Do not trust that.**
+The client is a published npm package that anyone can fork, patch, or replay — see §6.
 
 There is deliberately **no project id, no account id, and no authentication**. That is the
-privacy design, not an oversight: this data is anonymous and cannot be joined to a
-customer. If that trade-off needs revisiting, it is a decision for the CLI owner
-(`plans/cli-telemetry.md` §9.1), not something to solve by adding a field here.
+privacy design, not an oversight. If it needs revisiting, that is a decision for the CLI
+owner (`plans/cli-telemetry.md` §9.1) — and note that `setup-progress` (§2) already
+covers the identified case, which is part of why this one stays anonymous.
 
-## 3. The route
+## 4. The route
 
-`POST /api/telemetry`
+`POST /api/telemetry` → `src/app/api/telemetry/route.ts`.
 
-- **Unauthenticated.** There is nothing to authenticate against; a token would defeat the
-  anonymity.
-- **Always `204 No Content`**, on success *and* on rejection. Never return validation
-  errors, never return a body, never return a 4xx/5xx the client can distinguish.
-  Rationale: the CLI swallows every failure silently (1.5s timeout, no retry, no output),
-  so a response body is unread; and an endpoint that reports *why* a payload was rejected
-  is an oracle for probing the allowlists.
-- **Size cap** at 256 KB request body, rejected before parse. The client caps itself at
-  64 KB (`plans/cli-telemetry.md` §7); anything four times that is not our client.
-- **CORS: none.** This is called by a Node process, never a browser. Do not add headers
-  that let a page POST to it.
-- **No cookies, no sessions.** If the framework sets one by default, strip it.
-- **Do not log the raw request.** The whole point is that we hold enum data; a request log
-  that captures bodies and IPs alongside it recreates exactly what we promised not to
-  keep. Check whatever request-logging middleware the app has, and exclude this path
-  explicitly.
+Follow `src/app/api/debug/route.ts` closely. Differences:
 
-Latency target: p99 under 50 ms server-side. Validate, enqueue or insert, return. If
-insert is slow, buffer and write asynchronously — but do not build a queue before you have
-measured that you need one.
+- **Always `204 No Content`**, on success *and* on rejection. `/api/debug` returns
+  `{ ok: true }`; here return nothing at all. The CLI swallows every failure silently
+  (1.5s timeout, no retry, no output), so a body is unread — and an endpoint that reports
+  *why* a payload was rejected is an oracle for probing the allowlists.
+  (`setup-progress` uses a 400 only where it cannot depend on the projectId, for the same
+  no-oracle reason. There is no such case here: return 204 unconditionally.)
+- **Size cap 256 KB**, rejected before parse. The client caps itself at 64 KB
+  (`plans/cli-telemetry.md` §7); `/api/debug`'s 1 MB is sized for full log uploads and is
+  far too generous for enum payloads.
+- **CORS: none.** Called by a Node process, never a browser.
+- **No cookies, no sessions.** Strip any the framework sets by default.
+- **Do not log the raw request.** The point is that we hold enum data; a request log
+  capturing bodies and IPs alongside it recreates what we promised not to keep. Check the
+  app's request-logging middleware and exclude this path explicitly.
+- **No GET/LIST/detail on this path.** Reads happen only through the staff-gated page in
+  §8, exactly as `/api/debug` and `/debug` are split today.
 
-## 4. Validation
+Latency target: p99 under 50 ms server-side. Validate, insert, return.
+
+## 5. Validation
 
 Server-side validation is the whole security model. Three rules:
 
-1. **Allowlist, never sanitize.** Every enum field is compared against a server-side copy
-   of the allowlist. A value not in the list becomes `other` (or `unknown` for `command`)
-   — it is *not* stored as-is, and it is *not* a reason to reject the row. Storing
-   unrecognized strings is how a "no free text" store quietly becomes a free-text store.
+1. **Allowlist, never sanitize.** Every enum is compared against a server-side copy of the
+   list. A value not in the list becomes `other` (or `unknown` for `command`) — it is
+   *not* stored as-is, and *not* a reason to reject the row. Storing unrecognized strings
+   is how a "no free text" store quietly becomes a free-text store.
 2. **Type and bound everything numeric.** `cpus` 1–1024, `durationMs` 0–86,400,000,
-   `exitCode` 0–255, `events` at most 200 entries. Clamp, do not reject.
-3. **Drop unknown keys entirely.** Do not persist a `meta` or event object you did not
-   destructure field by field. If a future client sends a field this server does not know,
-   losing it is correct; storing it blind is not.
+   `exitCode` 0–255, `events` at most 200. Clamp, do not reject. `/api/debug`'s
+   `clampString` / `clampMeta` / `clampEntries` are the pattern.
+3. **Drop unknown keys entirely.** Destructure field by field; never persist an object you
+   did not walk. This matters more here than in `/api/debug`: that route stores
+   `Schema.Types.Mixed` *by design* because the debug entry stream is heterogeneous. The
+   telemetry schema is closed, so it must **not** be `Mixed` at the top level — see §7.
 
-Keep the server allowlists in one module (e.g. `app/src/lib/telemetrySchema.ts`) with a
-comment pointing at `schemas/telemetry.schema.json` in the CLI repo, and a test that fails
-loudly when someone adds an enum value in one place only. The CLI repo does exactly this
-between its own code and schema (`tests/settings-schema.test.js`); mirror the habit.
+Put the allowlists in one module, `src/lib/telemetrySchema.ts`, with a comment pointing at
+`schemas/telemetry.schema.json`, and a test that fails when an enum is added in one place
+only. This is the same discipline `src/lib/setupProvenance.ts` and `src/lib/setupProgress.ts`
+already apply, and the CLI repo mirrors it in `tests/settings-schema.test.js`.
 
 `anonymousId` and `sessionId` must both parse as UUIDs. If either does not, generate a
-per-request random value instead — never store the string you were given, and never store
-a null that would collapse unrelated rows into one bucket.
+per-request random value — never store the string you were given, and never store a null
+that would collapse unrelated rows into one bucket.
 
-## 5. Abuse and integrity
+## 6. Abuse and integrity
 
 The endpoint is public, unauthenticated, and its payload is a documented schema in a
 public npm package. Assume all of:
 
-- **Volume flooding.** Rate-limit by source IP — something like 60 requests/minute, 1000/
-  hour — and shed above it. Honest usage is ~1 request per CLI run; a machine running
-  `init` in a loop still will not approach that.
-- **`anonymousId` flooding.** A single IP minting thousands of distinct `anonymousId`s is
-  the shape that ruins "how many machines" as a metric. Do not try to block it inline;
-  instead store the *hash* of the source IP alongside each row (see §6) so the distortion
-  can be detected and excluded at query time.
-- **Replay.** Identical payloads re-sent are indistinguishable from real ones, by design
-  (no nonce, no auth). Deduplicate on `(sessionId, event, step)` at write time so a
-  retried flush cannot double-count a step.
-- **Payload-shaped attacks.** Deeply nested JSON, enormous arrays, prototype-pollution
-  keys (`__proto__`, `constructor`). The size cap plus strict field-by-field
-  destructuring handles all three; a schema validator that walks arbitrary input does not.
+- **Volume flooding.** Rate-limit by source IP — ~60/min, ~1000/hour — and shed above it.
+  Honest usage is one request per CLI run.
+- **`anonymousId` flooding.** One IP minting thousands of distinct ids ruins "how many
+  machines". Do not block inline; store a hashed IP (§7) so it can be detected and
+  excluded at query time.
+- **Replay.** Identical payloads re-sent are indistinguishable from real ones by design.
+  Deduplicate on `sessionId` (unique index) so a retried flush cannot double-count.
+- **Payload-shaped attacks.** Deep nesting, huge arrays, `__proto__` / `constructor` keys.
+  The size cap plus strict field-by-field destructuring handles all three; a validator
+  that walks arbitrary input does not.
 
-None of this needs to be perfect. It needs to be good enough that a bored person with curl
-cannot silently corrupt the numbers we are about to start making decisions from.
+## 7. Storage
 
-## 6. Storage
+One Mongoose model, `src/models/CliTelemetry.ts`, following the conventions in
+`src/models/DebugLog.ts`:
 
-One append-only table. Suggested shape, adapt to whatever the dashboard already uses:
+```ts
+const CliTelemetrySchema = new Schema(
+  {
+    anonymousId: { type: String, required: true, index: true },
+    sessionId:   { type: String, required: true, unique: true },  // replay/dedupe
+    cliVersion:  { type: String, default: "" },
+    cliName:     { type: String, default: "other" },
+    platform:    { type: String, default: "" },
+    arch:        { type: String, default: "" },
+    nodeVersion: { type: String, default: "" },
+    cpus:        { type: Number, default: 0 },
+    ci:          { type: Boolean, default: false },
+    ciVendor:    { type: String, default: undefined },
+    source:      { type: String, enum: SETUP_SOURCES, default: undefined },
+    agent:       { type: String, default: undefined },
+    durationMs:  { type: Number, default: 0 },
+    exitCode:    { type: Number, default: null },
+    outcome:     { type: String, enum: ["ok", "error", "interrupted"], default: "ok" },
+    // Bounded, validated, allowlisted. NOT Mixed at the top level — unlike
+    // DebugLog.entries, this event set is closed (see §5.3).
+    events:      { type: [EventSchema], default: [] },
+    // sha256(ip + daily-rotating secret). Never the IP. Compare with
+    // DebugLog.submitFingerprint, which exists for the same reason.
+    submitFingerprint: { type: String, default: "" },
+    // TTL. See retention below.
+    expiresAt:   { type: Date, required: true },
+  },
+  { timestamps: true },
+);
 
+CliTelemetrySchema.index({ createdAt: -1 });
+CliTelemetrySchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 ```
-telemetry_runs
-  id                 uuid pk
-  received_at        timestamptz   -- server clock; the client sends no timestamp
-  anonymous_id       uuid
-  session_id         uuid          -- unique index, for flush dedupe
-  cli_version        text
-  cli_name           text
-  platform           text
-  arch               text
-  node_version       text
-  cpus               int
-  ci                 bool
-  ci_vendor          text null
-  source             text
-  agent              text null
-  duration_ms        int
-  exit_code          int
-  outcome            text
-  ip_hash            bytea         -- see below
-  events             jsonb         -- validated, allowlisted events array
 
-  index (received_at)
-  index (anonymous_id)
-  index (cli_version, received_at)
+Reuse `SETUP_SOURCES` from `src/lib/setupProvenance.ts` rather than redeclaring `cli |
+agent` — the CLI derives both from the same `invocationSource()`.
+
+**Retention: 180 days.** Implement it as the TTL index above, set `expiresAt` at write
+time, and let MongoDB sweep. This is the established pattern in the repo
+(`AskAiPendingApproval`, `CliAuthToken`) and it means retention cannot silently not
+happen — no cron, nothing to forget. Confirm the number with the CLI owner before it goes
+in any user-facing docs page.
+
+`submitFingerprint` exists only for the abuse detection in §6 and becomes useless for
+correlation every 24 hours. If storing anything IP-derived is unacceptable to whoever owns
+privacy at ReadMe, drop it — the cost is one abuse signal, not the product.
+
+## 8. How staff see it
+
+This is the part that makes the whole feature real; data nobody looks at is not
+instrumentation, it is a liability with a retention policy.
+
+### The page
+
+**`/admin/telemetry`** — `src/app/admin/telemetry/page.tsx`. It gets the staff gate and
+the sidebar for free: `src/app/admin/layout.tsx` wraps the entire `/admin/*` tree in
+`GodShell`, which calls `requireStaffSessionOr404()`. Copy the page preamble from
+`src/app/admin/signups/page.tsx`:
+
+```ts
+export const metadata: Metadata = { title: "CLI telemetry" };
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 ```
 
-**`ip_hash`**: `sha256(ip + daily_rotating_secret)`, never the IP itself. It exists only to
-detect the flooding in §5 and it becomes useless for correlation every 24 hours. If storing
-anything IP-derived is not acceptable to whoever owns privacy at ReadMe, drop the column —
-the cost is losing one abuse signal, not losing the product.
+`force-dynamic` + `revalidate = 0` is not optional — every staff page in this repo sets
+it so a stale CDN copy can never serve staff data to an unauthenticated viewer, as
+belt-and-braces alongside the per-request session check.
 
-Consider splitting `events` into a `telemetry_events` child table if you want per-step
-funnel queries to be cheap. Start with `jsonb`; the volume is one row per CLI run, which is
-small for a long time. Do not build a pipeline for data you do not have yet.
+Add one line to `GOD_NAV` in `src/components/admin/godNav.ts`:
 
-**Retention: 180 days, then hard delete.** Set this up as a scheduled job on day one, not
-as a follow-up — retention that is not implemented is retention that does not exist, and
-this is the kind of promise that ends up in a docs page. Confirm the number with the CLI
-owner before you write it down anywhere user-facing.
+```ts
+{ href: "/admin/telemetry", label: "CLI telemetry", icon: "chart-line" },
+```
 
-## 7. What this is for
+That file is the single source of truth for staff destinations — it feeds the godmode
+sidebar and both account menus, so one line makes the page discoverable everywhere at
+once. Pick an `IconName` that actually exists in `@/components/icon/generated-icons`.
 
-Build these five queries and confirm they are fast, before anyone asks for a dashboard.
-They are the reason the feature exists:
+### What's on it
 
-1. **`init` funnel.** Of runs that started `init`, what fraction reached each step, and
-   where do they stop? This is the single most valuable number in the dataset.
-2. **Time budget.** Median `byKind` split across successful `init` runs. Tells us whether
-   to optimize the AI passes, the package installs, or the waiting.
-3. **Agent share.** `source` and `agent` over time. We believe most runs are agent-driven;
-   this is the first time we would know.
-4. **Version adoption.** `cli_version` by week — how long a released fix takes to reach
+A server component doing Mongo aggregations directly — no API route, no client fetching.
+`await requireStaffSessionOr404()`, `await dbConnect()`, then one aggregate per panel.
+Time range from `searchParams` (`?days=7|30|90`, default 30).
+
+Five panels, matching the five questions the data exists to answer:
+
+1. **`init` funnel** — of runs whose `command` event is `init`, the share reaching each
+   step, and where they stop. The single most valuable number here. Cross-check it against
+   `/admin/unclaimed` (§2) — if the two disagree, one of them is wrong and that is worth
+   knowing.
+2. **Time budget** — median `byKind` split across successful `init` runs. Says whether to
+   optimize AI passes, package installs, or the waiting.
+3. **Agent share** — `source` and `agent` over time. We believe most runs are
+   agent-driven; this is the first time we would know.
+4. **Version adoption** — `cliVersion` by week. How long a released fix takes to reach
    people, and how much of the install base is on something ancient.
-5. **Platform floor.** `node_version` and `platform` distribution. `package.json` declares
-   `engines: >=18` and CI only exercises 20/22/24; this says whether that gap matters.
+5. **Platform floor** — `nodeVersion` and `platform` distribution. `package.json` declares
+   `engines: >=18` while CI only exercises 20/22/24; this says whether that gap matters.
 
-A dashboard page is nice-to-have. The queries are not.
+**There is no chart library in this app** — I checked `package.json`, there is no
+recharts/chart.js/visx/d3/nivo. Do not add one for a staff page. Every panel here is a
+ranked list with a magnitude, which is a table plus a `<div>` whose width is a
+percentage. That is how `/admin/signups` and `/debug` already render, it matches
+`godTheme.ts`, and it has no bundle cost. If someone later wants real charts, that is a
+separate conversation with a real justification.
 
-## 8. Rollout
+### The drill-down
 
-1. Ship the route returning `204` and writing nothing. Confirm it is reachable from a real
+**`/admin/telemetry/runs`** — recent raw runs, newest first, modelled on
+`src/app/debug/page.tsx` (which does exactly this for debug uploads: `.find({}).sort({
+createdAt: -1 }).limit(200).lean()`, rendered as a table with `LocalTime`).
+
+This is not just for curiosity. It is **the acceptance test surface for the privacy
+promise**: a staff member can open it and see, field by field, that nothing in there is a
+path, a prompt, or a key. Make the raw stored document viewable for a single run. If that
+page ever shows something that looks like a file path, the CLI has a bug and this is where
+we find out.
+
+### What not to build
+
+- **Not Grafana.** There is a ReadMe Grafana org at `readmeio.grafana.net`, but its
+  datasources are Elasticsearch, Loki, Prometheus, Tempo, Graphite, and k6 — there is no
+  Mongo or SQL datasource, so it cannot read this collection, and it is ReadMe's stack
+  rather than Restless's. Piping telemetry there is a project, not a shortcut. Revisit
+  only if Restless adopts that stack generally.
+- **Not a third-party analytics vendor.** See §10.
+- **Not alerting, yet.** Nobody knows what normal looks like. Get a month of data first.
+
+Ad-hoc questions get answered by querying Mongo directly. The page exists for the
+recurring five.
+
+## 9. Rollout
+
+1. Settle §2 with the CLI owner. It may change what you build.
+2. Ship the route returning `204` and writing nothing. Confirm it is reachable from a real
    `npx restless` run with `RESTLESS_SITE_URL` pointed at staging.
-2. Add validation and storage. Verify with a handful of real runs, including a failing one
-   and a `ctrl-c`'d one, that the rows look right.
-3. Check the stored rows by hand against `plans/cli-telemetry.md` §3's "never collected"
-   list. Grep a day of `events` jsonb for `/`, `\`, `=`, `http`, and anything that looks
-   like a path or a key. Finding nothing is the acceptance test for this whole project.
-4. Only then tell the CLI owner to flip the client default on
+3. Add validation and the model. Verify with real runs — including a failing one and a
+   `ctrl-c`'d one — that the documents look right.
+4. Build `/admin/telemetry/runs` **before** the aggregate page, and check a day of stored
+   documents by hand against `plans/cli-telemetry.md` §3's never-collected list. Grep the
+   `events` for `/`, `\`, `=`, `http`, and anything path- or key-shaped. Finding nothing
+   is the acceptance test for this whole project.
+5. Only then tell the CLI owner to flip the client default on
    (`plans/cli-telemetry.md` §8, commit 5).
-5. Build the §7 queries against real data.
+6. Build the five panels against real data.
 
-## 9. Do not
+## 10. Do not
 
 - Do not add authentication, a project id, or an account id to make the data more useful.
-  That is a product decision with a privacy cost, and it belongs to the CLI owner.
+  That is a product decision with a privacy cost, it belongs to the CLI owner, and §2 is
+  probably the real answer to whatever prompted it.
 - Do not store an unrecognized enum value "just in case".
 - Do not return validation errors to the client.
+- Do not use `Schema.Types.Mixed` for the event payload. `DebugLog` does, deliberately,
+  because its entry stream is open-ended. This schema is closed and must stay closed.
 - Do not let this route into the app's general request/response logging.
 - Do not forward the payload to a third-party analytics vendor without asking. The CLI's
   user-facing docs will say the data goes to Restless; a vendor hop makes that untrue.

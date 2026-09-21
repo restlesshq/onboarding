@@ -44,6 +44,27 @@ The last row matters: we *already* send `setup_source` and `setup_agent` at regi
 and the README already discloses it. Telemetry is an extension of that posture, not a new
 one.
 
+### An endpoint we already have and do not call
+
+`POST /api/projects/:projectId/setup-progress` exists in `restlesshq/app`, is tested, and
+records per-step `init` funnel data (`welcome`, `generate_oas`, `install_sdk`, `test`,
+`account` × `started|done|failed`) onto the durable `KeyRegistration` row. It is surfaced
+to staff today at `/admin/unclaimed`.
+
+**This CLI never calls it.** There is no reference to `setup-progress` anywhere in this
+package — the server half shipped and the client half did not.
+
+That is worth fixing on its own, independently of this plan, and it changes the shape of
+the `step` event below. The two mechanisms are not interchangeable: `setup-progress` is
+authenticated with the setup key and joined to a project, so it answers "did *this*
+customer stall"; telemetry is anonymous, so it answers "what fraction of all runs stall
+here, on which Node version". Probably we want both. What we should not do is build a
+second funnel in ignorance of the first.
+
+If we wire up `setup-progress`, the `step` event's ids below should reuse its
+`SETUP_STEPS` spelling (`generate_oas`, not `generate-oas`) so one step name means one
+thing across both systems. That is the spelling used throughout this document.
+
 ## 3. What gets collected
 
 One request per CLI run, containing a `meta` block and an `events` array.
@@ -92,10 +113,11 @@ One request per CLI run, containing a `meta` block and an `events` array.
   `--json`, `--refresh`, `--self-drive`, plus the names in `UPDATE_FLAGS` from
   `steps/update-flags.js`). **Never send flag values.** `--agent`'s value is the one
   exception and it travels as `meta.agent`, already normalized by `lib/env.js`.
-- `step` ids come from a fixed enum matching the step modules in `steps/` (`context`,
-  `detect-auth`, `generate-oas`, `prepare-account`, `install-sdk`, `verify-owner-id`,
-  `test-setup`, `final-checks`, `setup-account`). Not the human-readable step label —
-  labels are prose and can interpolate values.
+- `step` ids come from a fixed enum. Use the dashboard's existing `SETUP_STEPS` spelling
+  (`welcome`, `generate_oas`, `install_sdk`, `test`, `account`) for the steps it already
+  names, and add `context`, `detect_auth`, `verify_owner_id`, `final_checks` in the same
+  style for the ones it does not. Never the human-readable step label — labels are prose
+  and can interpolate values.
 - `byKind` comes from `summarize(debug.snapshot())` in `lib/timings-report.js:171`. Take
   **only** the per-kind totals and the wall total. Do **not** take span labels: most are
   constants, but a few are built at call time and the shape is not guaranteed.
@@ -296,8 +318,12 @@ one for what telemetry sends and one for `npx restless telemetry disable`.
    engineering one, and it should have a look from whoever owns that here.
 3. **The docs URL.** The notice and `docs/telemetry.md` both need a canonical link. I have
    used `https://restless.ai/docs/telemetry` as a placeholder.
-4. **Retention.** Belongs in `plans/backend-telemetry.md` §6, but it is your call, not the
+4. **Retention.** Belongs in `plans/backend-telemetry.md` §7, but it is your call, not the
    backend agent's.
+5. **`setup-progress` (§2).** Do we wire the CLI up to the funnel endpoint that already
+   exists, ship anonymous telemetry, or both? I'd do both — they answer different
+   questions — but wiring up `setup-progress` is much the smaller change and gets a funnel
+   signal without waiting on any of this.
 
 ## 10. Out of scope
 
