@@ -215,3 +215,9 @@ Authorizing a machine needs a browser once; after that the session is reused for
    started it yourself or your coding agent did, and which agent did the work
    (`--agent` / `RESTLESS_AGENT` if you set one, otherwise blank unless it's
    Claude Code or Codex). That's it - no prompts, no code, no file contents.
+ - The CLI sends anonymous usage data once per run: which command you ran, how
+   it ended, how long it took, and how far setup got. No paths, no code, no
+   prompts, and nothing tied to your account. Turn it off with
+   `npx restless telemetry disable` (or `DO_NOT_TRACK=1`), see exactly what
+   would be sent with `RESTLESS_TELEMETRY_DEBUG=1`, and read the full list in
+   [docs/telemetry.md](docs/telemetry.md).

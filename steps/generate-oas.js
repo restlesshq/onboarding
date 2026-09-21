@@ -7,6 +7,7 @@ import { mergeSpecs, planSpecGroups, countOperations as countMergedOperations } 
 import { bold, dim, green, red, yellow, cyan, ask, askWithPreview, singleSelect } from '../lib/ui.js';
 import { guessBaseUrl } from '../lib/base-url.js';
 import { loadSettings, saveSettings, upsertApi, generatePrefix } from '../lib/settings.js';
+import * as telemetry from '../lib/telemetry.js';
 import { startStep } from '../lib/step-template.js';
 import { fatalError } from '../lib/errors.js';
 import { scanCodebase } from '../lib/find-endpoints.js';
@@ -743,6 +744,12 @@ async function finalizeApi({
   ]});
 
   const settings = loadSettings(rootDir);
+  // Same three facts we are about to persist, as allowlisted categories.
+  // Recorded here rather than at each detection site because this is where
+  // they are finally settled - and `lib/telemetry.js` drops anything that
+  // isn't a known language / framework / spec source, so a new detector
+  // can't widen what leaves the machine without widening that list first.
+  telemetry.recordDetect({ language, framework, oasSourceKind: oasSource?.kind });
   upsertApi(settings, {
     name,
     rootDir: apiRootDir,
