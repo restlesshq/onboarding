@@ -45,14 +45,21 @@ that route with a different schema and tighter validation.
 
 `POST /api/projects/[projectId]/setup-progress` already exists, is tested
 (`route.test.ts`), and records per-step setup funnel data onto the durable
-`KeyRegistration` row. `src/lib/setupProgress.ts` defines the wire contract:
+`KeyRegistration` row. It arrived in
+[restlesshq/app#240](https://github.com/restlesshq/app/pull/240), "Backend: accept setup
+email + per-step progress from the CLI" (merged 2026-08-15), which was explicitly the
+server half of a two-part change. `src/lib/setupProgress.ts` defines the wire contract:
 `SETUP_STEPS = [welcome, generate_oas, install_sdk, test, account]`, statuses
 `started | done | failed`, and `furthestKnownStep` for "how far did they get". It is
 surfaced to staff today at `/admin/unclaimed`.
 
-**The CLI never calls it.** There is no reference to `setup-progress` anywhere in
-`restlesshq/onboarding` — I grepped the whole package. The server half was built and the
-client half was not wired up (or was removed).
+**The CLI never calls it, and never sent the email either.** There is no reference to
+`setup-progress` anywhere in `restlesshq/onboarding`, and `registerProject` in
+`lib/project-init.js` sends only `write_key_hash` + provenance — no `email`. So *both*
+capabilities #240 added are unused: the optional `email` on `/api/projects/init` and the
+progress endpoint. The PR's own description anticipated this ("an old CLI that sends no
+email and never calls the new endpoint behaves exactly as before"), which is why nothing
+broke and nobody noticed.
 
 This matters more than anything else in this document, because it means the single most
 valuable query in §7 — the `init` funnel — may not need new telemetry at all. Before you

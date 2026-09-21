@@ -51,8 +51,11 @@ records per-step `init` funnel data (`welcome`, `generate_oas`, `install_sdk`, `
 `account` × `started|done|failed`) onto the durable `KeyRegistration` row. It is surfaced
 to staff today at `/admin/unclaimed`.
 
-**This CLI never calls it.** There is no reference to `setup-progress` anywhere in this
-package — the server half shipped and the client half did not.
+**This CLI never calls it, and never sent the setup email either.** Both landed in
+[restlesshq/app#240](https://github.com/restlesshq/app/pull/240) (merged 2026-08-15) as
+the server half of a two-part change; the client half was never written. `registerProject`
+in `lib/project-init.js` still sends only `write_key_hash` + provenance, and there is no
+reference to `setup-progress` anywhere in this package.
 
 That is worth fixing on its own, independently of this plan, and it changes the shape of
 the `step` event below. The two mechanisms are not interchangeable: `setup-progress` is
