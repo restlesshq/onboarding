@@ -70,62 +70,108 @@ thing across both systems. That is the spelling used throughout this document.
 
 ## 3. What gets collected
 
-One request per CLI run, containing a `meta` block and an `events` array.
+**One request per run. One event type. Everything else is a property of the run.**
 
-### `meta` (once per run)
+The first draft of this plan had five event types (`command`, `step`, `timings`, `detect`,
+`error`). That was wrong: four of the five occur *exactly once per run*, which makes them
+fields, not events. Only `step` is a genuine 1..n stream. Collapsing them removes four
+schemas to validate, store, document, and defend, and makes the four cheapest queries
+plain field aggregations instead of array unwinds.
 
-| Field | Source | Notes |
-| --- | --- | --- |
-| `schemaVersion` | constant `1` | |
-| `anonymousId` | random UUID in `~/.restless/config.json` | Generated once per machine with `crypto.randomUUID()`. **Not** derived from hostname, username, MAC, or cwd — it must not be reversible to a person or a repo. |
-| `sessionId` | `crypto.randomUUID()` per run | Ties the events of one run together without tying runs to each other. |
-| `cliVersion` | `readVersion()` in `bin/restless.js:446` | |
-| `cliName` | `CLI_NAME` from `lib/config.js`, mapped to `restless \| api \| other` | `CLI_NAME` is derived from `argv[1]`, so it is allowlisted rather than sent raw. |
-| `platform` | `process.platform` | |
-| `arch` | `process.arch` | |
-| `nodeVersion` | `process.version` | |
-| `cpus` | `os.cpus().length` | |
-| `ci` | `Boolean(process.env.CI)` | |
-| `ciVendor` | allowlist below, else `other`, else absent | |
-| `source` | `invocationSource()` from `lib/env.js` | `cli \| agent` |
-| `agent` | `detectAgent()` from `lib/env.js` | Already a normalized slug or `null`. |
-| `durationMs` | wall clock of the run | |
-| `exitCode` | from `debug.finalize({ exitCode })` | |
-| `outcome` | `ok \| error \| interrupted` | |
+### The one event: `step`
 
-`ciVendor` allowlist: `github` (`GITHUB_ACTIONS`), `gitlab` (`GITLAB_CI`), `circle`
-(`CIRCLECI`), `buildkite` (`BUILDKITE`), `jenkins` (`JENKINS_URL`), `vercel` (`VERCEL`),
-`netlify` (`NETLIFY`). Anything else with `CI` set is `other`.
+Emitted as each `init` plan step completes. Values are exactly the dashboard's existing
+`SETUP_STEPS` (`src/lib/setupProgress.ts`) — **do not invent new step ids**:
 
-### `events` (0..n per run)
+| id | what it means |
+| --- | --- |
+| `welcome` | got past the welcome screen and picked an agent |
+| `generate_oas` | "Map your API" — found or generated the spec |
+| `install_sdk` | "Install SDK" — package installed, key generated, SDK wired, final checks |
+| `test` | "Test your setup" — a live request was seen |
+| `account` | "Set up account" — specs uploaded, signed in, project claimed |
 
-| Event | Fields | When |
-| --- | --- | --- |
-| `command` | `command`, `flags[]` | Once, as soon as the command is resolved. |
-| `step` | `step`, `outcome`, `durationMs` | Each `init` plan step ends. |
-| `timings` | `totalMs`, `byKind: { ai, exec, net, scan, wait, anim }` | Once at flush. |
-| `detect` | `language`, `framework`, `oasSourceKind` | Once, when `init` finishes detection. |
-| `error` | `code`, `step` | A run ends in `reportError` / `fatalError`. |
+Fields: `{ step, status, durationMs }`, `status` ∈ `started | done | failed` (the
+dashboard's `SETUP_STATUSES`).
 
-- `command` is from a fixed allowlist matching the dispatch chain in `bin/restless.js:521`
-  onward: `init`, `setup`, `supercharge`, `context`, `debug`, `update`, `guide`, `key`,
-  `register`, `verify`, `login`, `claim`, `reset`, `clear`, `timings`, `submit-debug`,
-  `telemetry`, `help`, `version`. Anything else is `unknown`. **Never send raw `argv`.**
-- `flags[]` is flag *names* only, from a fixed allowlist (`--debug`, `--timings`,
-  `--agent`, `--dir`, `--oas`, `--url`, `--project`, `--full`, `--dry-run`, `--yes`,
-  `--json`, `--refresh`, `--self-drive`, plus the names in `UPDATE_FLAGS` from
-  `steps/update-flags.js`). **Never send flag values.** `--agent`'s value is the one
-  exception and it travels as `meta.agent`, already normalized by `lib/env.js`.
-- `step` ids come from a fixed enum. Use the dashboard's existing `SETUP_STEPS` spelling
-  (`welcome`, `generate_oas`, `install_sdk`, `test`, `account`) for the steps it already
-  names, and add `context`, `detect_auth`, `verify_owner_id`, `final_checks` in the same
-  style for the ones it does not. Never the human-readable step label — labels are prose
-  and can interpolate values.
-- `byKind` comes from `summarize(debug.snapshot())` in `lib/timings-report.js:171`. Take
-  **only** the per-kind totals and the wall total. Do **not** take span labels: most are
-  constants, but a few are built at call time and the shape is not guaranteed.
-- `error.code` is a stable enum we assign at the raise site, never a message, never a
-  stack, never an HTTP body. If a site has no code yet, send `unknown` rather than text.
+Those five are not a guess — the CLI's own `STEPS` array in `lib/runner.js:10` is exactly
+these four phases, and `welcome` is everything before the plan starts. The vocabulary
+already exists, is already rendered at `/admin/unclaimed`, and matching it means one step
+name means one thing in both systems. If we ever need finer granularity, add it to
+`src/lib/setupProgress.ts` so both systems gain it at once.
+
+At most 5 of these per run, and only for `init`. `update`, `context`, `debug` and the
+agent commands emit none — their outcome is the whole story.
+
+**This also simplifies the instrumentation.** The earlier draft said "one line per file in
+`steps/`". That is unnecessary: `lib/runner.js` already owns the step lifecycle, already
+emits `debug.log('step.start', ...)`, and already opens a timing span per step
+(`lib/runner.js:346`). Hook it there — four call sites in one file, not nine modules.
+
+### Run properties (`meta`)
+
+Identity and dedupe:
+
+| Field | Notes |
+| --- | --- |
+| `anonymousId` | Random UUID in `~/.restless/config.json`. **Not** derived from hostname, username, MAC, or cwd. |
+| `sessionId` | Per run. Lets the server dedupe a retried flush. |
+| `schemaVersion` | `1`. |
+
+What was run:
+
+| Field | Notes |
+| --- | --- |
+| `command` | Fixed allowlist matching the dispatch chain at `bin/restless.js:521`: `init`, `setup`, `supercharge`, `context`, `debug`, `update`, `guide`, `key`, `register`, `verify`, `login`, `claim`, `reset`, `clear`, `timings`, `submit-debug`, `telemetry`, `help`, `version`. Anything else → `unknown`. **Never raw `argv`.** |
+| `flags[]` | Flag *names* only, short allowlist (below). **Never values.** |
+| `outcome` | `ok \| error \| interrupted` |
+| `exitCode` | |
+| `errorCode` | Stable enum assigned at the raise site, only when `outcome: error`. Never a message, stack, or HTTP body. |
+| `errorStep` | Which step it died in, when known. |
+| `durationMs` | Wall clock. |
+| `byKind` | `{ ai, exec, net, scan, wait, anim }` totals in ms, from `summarize(debug.snapshot())` (`lib/timings-report.js:171`). Totals only — **never span labels**, which are built at call time. |
+
+Environment:
+
+| Field | Notes |
+| --- | --- |
+| `cliVersion` | |
+| `cliName` | `restless \| api \| other`. Answers whether ReadMe's `api` package is still dispatching to us. |
+| `platform` | `process.platform` |
+| `nodeVersion` | `process.version` |
+| `ci` | `Boolean(process.env.CI)` |
+| `source` | `cli \| agent`, from `invocationSource()` |
+| `agent` | `detectAgent()` — already a normalized slug or `null` |
+
+Detection, `init` only:
+
+| Field | Notes |
+| --- | --- |
+| `language` | Allowlisted, from `lib/sdk-writers/languages.js` |
+| `framework` | Allowlisted |
+| `oasSourceKind` | The `oasSource.kind` enum already in `schemas/settings.schema.json`: `ai \| native \| found \| file \| url \| describe \| agent` |
+
+These three are already sent to the server at registration — but only by runs that *reach*
+registration. Sending them anonymously is what lets us see the ones that don't, which is
+the whole point. They make the funnel cross-tabbable ("Ruby runs fail at `install_sdk`
+three times as often"), and that is the first question anyone will ask of the funnel.
+
+`flags[]` allowlist — kept deliberately short, to flags that change what the CLI *does*:
+`--agent`, `--self-drive`, `--dir`, `--oas`, `--url`, `--project`, `--full`, `--refresh`,
+`--dry-run`, `--debug`. Not `--yes`, `--json`, `--timings` — those describe how output is
+shaped, not what ran. This is the easiest thing in the whole payload to cut if you want it
+smaller; nothing in §7 of the backend plan depends on it.
+
+### Deliberately not collected, though we could
+
+Cut from the first draft because no question we have needs them, and a field is far easier
+to add later than to remove once it is in a published privacy doc:
+
+- `cpus`, `arch` — Vercel sends CPU count; we have no question that uses it.
+- `ciVendor` — the `ci` boolean answers "how much of our usage is CI". Which CI does not
+  change anything we would do.
+- A separate `command` event, a `timings` event, a `detect` event, an `error` event — all
+  once-per-run, now fields.
 
 ### Never collected
 
@@ -143,8 +189,14 @@ State this list verbatim in the docs and enforce it with a test:
 Note this is strictly stronger than what `lib/debug.js` records locally — that file
 deliberately captures `cwd`, `user`, and `hostname` (`lib/debug.js:69`) because it stays
 on disk unless someone passes `--debug`. **The telemetry payload must be built
-independently, not by filtering a debug snapshot**, so that a future field added to the
-debug log can never leak into telemetry by default.
+independently, not by filtering a debug snapshot**, so a future field added to the debug
+log can never leak into telemetry by default.
+
+### Volume
+
+One HTTP request per CLI run, ~1 KB, at most 5 step entries. A developer running `init`,
+having it fail, and re-running it three times produces four requests. There is no
+per-keystroke, per-AI-turn, or per-file event, and there should never be one.
 
 ## 4. Opt-out and precedence
 
@@ -206,8 +258,9 @@ Rules:
   silently. No console output, no retry. This mirrors `trackDebugEvent`
   (`bin/restless.js:199`) and is the single most important rule in the whole plan:
   **telemetry must never be able to slow down, block, or break a run.**
-- If the payload somehow exceeds 64 KB, drop the `events` array down to `command` +
-  `error` and send that. A bounded payload is a guarantee, not a hope.
+- The payload is structurally bounded — flat fields plus at most 5 step entries, ~1 KB —
+  so there is no trimming path to write. Assert the bound in a test rather than handling
+  an overflow that cannot happen without a bug.
 
 ## 8. Implementation
 
@@ -287,8 +340,10 @@ Add a sibling `telemetry.record('error', { code, step })`. Pass a code from the 
 site; default `unknown`. Do **not** pass `headline` or `details` — both interpolate HTTP
 statuses, URLs, and server text.
 
-**`steps/*.js`** — each step's completion path records `recordStep(id, outcome, ms)`. The
-step ids already exist as module boundaries; this is one line per file.
+**`lib/runner.js`** — the step lifecycle already lives here: it owns the `STEPS` array
+(line 10), emits `debug.log('step.start', ...)`, and opens a timing span per step (line
+346). Add `telemetry.recordStep(id, status, ms)` alongside those, mapping the four plan
+steps onto `SETUP_STEPS`. Four call sites in one file — `steps/*.js` stays untouched.
 
 **`README.md`** — extend the existing `# Privacy` section (line 208). It already discloses
 the registration provenance in exactly the right tone; add two bullets in the same voice,

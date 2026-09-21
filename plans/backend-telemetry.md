@@ -95,38 +95,57 @@ enum in `plans/cli-telemetry.md` §3 — one spelling of a step name across both
 the payload.** Read it; do not reconstruct it from this document. If it does not exist
 yet, the CLI work has not landed — coordinate rather than guessing a shape.
 
-Summary, so you can start designing storage:
+The shape is deliberately flat: **one request per run, and exactly one event type.**
+Everything that happens once per run is a field, not an event. Only `steps` is a stream,
+it is capped at 5, and it is populated only by `init`.
 
 ```jsonc
 {
   "schemaVersion": 1,
-  "meta": {
-    "anonymousId": "uuid",       // stable per machine, random, not derived from anything
-    "sessionId":   "uuid",       // per run
-    "cliVersion":  "0.9.2",
-    "cliName":     "restless",   // enum: restless | api | other
-    "platform":    "darwin",     // process.platform
-    "arch":        "arm64",
-    "nodeVersion": "v20.11.0",
-    "cpus":        10,
-    "ci":          false,
-    "ciVendor":    "github",     // enum, optional
-    "source":      "agent",      // enum: cli | agent
-    "agent":       "claude",     // slug or null
-    "durationMs":  48213,
-    "exitCode":    0,
-    "outcome":     "ok"          // enum: ok | error | interrupted
-  },
-  "events": [
-    { "event": "command", "command": "init", "flags": ["--agent"] },
-    { "event": "step", "step": "generate_oas", "outcome": "ok", "durationMs": 21044 },
-    { "event": "timings", "totalMs": 48213,
-      "byKind": { "ai": 30112, "exec": 8020, "net": 1400, "scan": 900, "wait": 7000, "anim": 781 } },
-    { "event": "detect", "language": "javascript", "framework": "fastify", "oasSourceKind": "ai" },
-    { "event": "error", "code": "oas-upload-failed", "step": "generate_oas" }
+
+  // identity + dedupe
+  "anonymousId": "uuid",      // stable per machine, random, not derived from anything
+  "sessionId":   "uuid",      // per run; dedupe key
+
+  // what was run
+  "command":   "init",        // closed enum; anything unrecognized -> "unknown"
+  "flags":     ["--agent"],   // flag NAMES only, closed enum, never values
+  "outcome":   "ok",          // ok | error | interrupted
+  "exitCode":  0,
+  "errorCode": null,          // closed enum, only when outcome=error; never a message
+  "errorStep": null,
+  "durationMs": 48213,
+  "byKind": { "ai": 30112, "exec": 8020, "net": 1400, "scan": 900, "wait": 7000, "anim": 781 },
+
+  // environment
+  "cliVersion":  "0.9.2",
+  "cliName":     "restless",  // restless | api | other
+  "platform":    "darwin",
+  "nodeVersion": "v20.11.0",
+  "ci":          false,
+  "source":      "agent",     // cli | agent  (reuse SETUP_SOURCES)
+  "agent":       "claude",    // slug or null
+
+  // detection, init only
+  "language":      "javascript",
+  "framework":     "fastify",
+  "oasSourceKind": "ai",      // ai | native | found | file | url | describe | agent
+
+  // the only event stream: <=5, init only
+  "steps": [
+    { "step": "welcome",      "status": "done",   "durationMs": 4100 },
+    { "step": "generate_oas", "status": "done",   "durationMs": 21044 },
+    { "step": "install_sdk",  "status": "failed", "durationMs": 8020 }
   ]
 }
 ```
+
+**`steps[].step` uses `SETUP_STEPS` from `src/lib/setupProgress.ts`** — `welcome`,
+`generate_oas`, `install_sdk`, `test`, `account` — and `status` uses `SETUP_STATUSES`
+(`started | done | failed`). Import them; do not redeclare. Same for `source`, which
+reuses `SETUP_SOURCES` from `src/lib/setupProvenance.ts`. This is the same wire vocabulary
+`setup-progress` already speaks (§2), deliberately, so the two funnels are comparable
+rather than merely similar.
 
 Every string field is drawn from a closed allowlist on the client. **Do not trust that.**
 The client is a published npm package that anyone can fork, patch, or replay — see §6.
@@ -170,12 +189,14 @@ Server-side validation is the whole security model. Three rules:
    *not* stored as-is, and *not* a reason to reject the row. Storing unrecognized strings
    is how a "no free text" store quietly becomes a free-text store.
 2. **Type and bound everything numeric.** `cpus` 1–1024, `durationMs` 0–86,400,000,
-   `exitCode` 0–255, `events` at most 200. Clamp, do not reject. `/api/debug`'s
+   `exitCode` 0–255, `steps` at most 5, `flags` at most 20. Clamp, do not reject. `/api/debug`'s
    `clampString` / `clampMeta` / `clampEntries` are the pattern.
 3. **Drop unknown keys entirely.** Destructure field by field; never persist an object you
    did not walk. This matters more here than in `/api/debug`: that route stores
-   `Schema.Types.Mixed` *by design* because the debug entry stream is heterogeneous. The
-   telemetry schema is closed, so it must **not** be `Mixed` at the top level — see §7.
+   `Schema.Types.Mixed` *by design* because the debug entry stream is heterogeneous. This
+   payload is flat and closed, so nothing here is `Mixed` — see §7. Validate `byKind`'s
+   keys against the closed set (`ai, exec, net, scan, wait, anim`) too; it is the one
+   map-shaped field and so the one place a free-text key could sneak in.
 
 Put the allowlists in one module, `src/lib/telemetrySchema.ts`, with a comment pointing at
 `schemas/telemetry.schema.json`, and a test that fails when an enum is added in one place
@@ -205,34 +226,50 @@ public npm package. Assume all of:
 ## 7. Storage
 
 One Mongoose model, `src/models/CliTelemetry.ts`, following the conventions in
-`src/models/DebugLog.ts`:
+`src/models/DebugLog.ts`. Note it is flat — the payload has one event stream, so the
+document has one subdocument array:
 
 ```ts
+const StepSchema = new Schema({
+  step:       { type: String, enum: SETUP_STEPS,    required: true },
+  status:     { type: String, enum: SETUP_STATUSES, required: true },
+  durationMs: { type: Number, default: 0 },
+}, { _id: false });
+
 const CliTelemetrySchema = new Schema(
   {
     anonymousId: { type: String, required: true, index: true },
     sessionId:   { type: String, required: true, unique: true },  // replay/dedupe
+
+    command:     { type: String, default: "unknown", index: true },
+    flags:       { type: [String], default: [] },
+    outcome:     { type: String, enum: ["ok", "error", "interrupted"], default: "ok" },
+    exitCode:    { type: Number, default: null },
+    errorCode:   { type: String, default: undefined },
+    errorStep:   { type: String, default: undefined },
+    durationMs:  { type: Number, default: 0 },
+    byKind:      { type: Map, of: Number, default: {} },   // closed key set, validated
+
     cliVersion:  { type: String, default: "" },
     cliName:     { type: String, default: "other" },
     platform:    { type: String, default: "" },
-    arch:        { type: String, default: "" },
     nodeVersion: { type: String, default: "" },
-    cpus:        { type: Number, default: 0 },
     ci:          { type: Boolean, default: false },
-    ciVendor:    { type: String, default: undefined },
     source:      { type: String, enum: SETUP_SOURCES, default: undefined },
     agent:       { type: String, default: undefined },
-    durationMs:  { type: Number, default: 0 },
-    exitCode:    { type: Number, default: null },
-    outcome:     { type: String, enum: ["ok", "error", "interrupted"], default: "ok" },
-    // Bounded, validated, allowlisted. NOT Mixed at the top level — unlike
-    // DebugLog.entries, this event set is closed (see §5.3).
-    events:      { type: [EventSchema], default: [] },
+
+    language:      { type: String, default: undefined },
+    framework:     { type: String, default: undefined },
+    oasSourceKind: { type: String, default: undefined },
+
+    // At most 5. NOT Mixed — unlike DebugLog.entries, this set is closed (§5.3).
+    steps: { type: [StepSchema], default: [] },
+
     // sha256(ip + daily-rotating secret). Never the IP. Compare with
     // DebugLog.submitFingerprint, which exists for the same reason.
     submitFingerprint: { type: String, default: "" },
-    // TTL. See retention below.
-    expiresAt:   { type: Date, required: true },
+
+    expiresAt: { type: Date, required: true },   // TTL, see retention below
   },
   { timestamps: true },
 );
@@ -241,8 +278,13 @@ CliTelemetrySchema.index({ createdAt: -1 });
 CliTelemetrySchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 ```
 
-Reuse `SETUP_SOURCES` from `src/lib/setupProvenance.ts` rather than redeclaring `cli |
-agent` — the CLI derives both from the same `invocationSource()`.
+Four of the five §8 panels read plain top-level fields, so they are ordinary aggregations
+on indexed columns. Only the funnel touches `steps`. That is the payoff for keeping one
+event type.
+
+Import `SETUP_STEPS`, `SETUP_STATUSES` and `SETUP_SOURCES` rather than redeclaring them.
+The CLI derives `source` from the same `invocationSource()` these came from, and the step
+vocabulary is deliberately shared with `setup-progress` (§2).
 
 **Retention: 180 days.** Implement it as the TTL index above, set `expiresAt` at write
 time, and let MongoDB sweep. This is the established pattern in the repo
@@ -345,8 +387,8 @@ recurring five.
 3. Add validation and the model. Verify with real runs — including a failing one and a
    `ctrl-c`'d one — that the documents look right.
 4. Build `/admin/telemetry/runs` **before** the aggregate page, and check a day of stored
-   documents by hand against `plans/cli-telemetry.md` §3's never-collected list. Grep the
-   `events` for `/`, `\`, `=`, `http`, and anything path- or key-shaped. Finding nothing
+   documents by hand against `plans/cli-telemetry.md` §3's never-collected list. Grep the stored
+   documents for `/`, `\`, `=`, `http`, and anything path- or key-shaped. Finding nothing
    is the acceptance test for this whole project.
 5. Only then tell the CLI owner to flip the client default on
    (`plans/cli-telemetry.md` §8, commit 5).
@@ -359,7 +401,7 @@ recurring five.
   probably the real answer to whatever prompted it.
 - Do not store an unrecognized enum value "just in case".
 - Do not return validation errors to the client.
-- Do not use `Schema.Types.Mixed` for the event payload. `DebugLog` does, deliberately,
+- Do not use `Schema.Types.Mixed` anywhere in this model. `DebugLog` does, deliberately,
   because its entry stream is open-ended. This schema is closed and must stay closed.
 - Do not let this route into the app's general request/response logging.
 - Do not forward the payload to a third-party analytics vendor without asking. The CLI's
