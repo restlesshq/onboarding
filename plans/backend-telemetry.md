@@ -131,21 +131,33 @@ it is capped at 5, and it is populated only by `init`.
   "framework":     "fastify",
   "oasSourceKind": "ai",      // ai | native | found | file | url | describe | agent
 
-  // the only event stream: <=5, init only
+  // the only event stream: <=3, init only
   "steps": [
-    { "step": "welcome",      "status": "done",   "durationMs": 4100 },
     { "step": "generate_oas", "status": "done",   "durationMs": 21044 },
     { "step": "install_sdk",  "status": "failed", "durationMs": 8020 }
   ]
 }
 ```
 
-**`steps[].step` uses `SETUP_STEPS` from `src/lib/setupProgress.ts`** — `welcome`,
-`generate_oas`, `install_sdk`, `test`, `account` — and `status` uses `SETUP_STATUSES`
-(`started | done | failed`). Import them; do not redeclare. Same for `source`, which
-reuses `SETUP_SOURCES` from `src/lib/setupProvenance.ts`. This is the same wire vocabulary
-`setup-progress` already speaks (§2), deliberately, so the two funnels are comparable
-rather than merely similar.
+**`steps[].step` is a strict subset of `SETUP_STEPS` from `src/lib/setupProgress.ts`** —
+just `generate_oas`, `install_sdk`, `test` — and `status` uses `SETUP_STATUSES`
+(`started | done | failed`) unchanged. Import both; do not redeclare. Same for `source`,
+which reuses `SETUP_SOURCES` from `src/lib/setupProvenance.ts`. This is deliberately the
+same wire vocabulary `setup-progress` already speaks (§2), so the two funnels are
+comparable rather than merely similar.
+
+`SETUP_STEPS`' other two values are not sent, and you should not add them:
+
+- **`welcome`** — redundant with the document itself. Every `init` run produces one, so
+  "all `init` runs" is the funnel's denominator, and a truer one than `welcome`: it counts
+  runs that died before the welcome screen, which `welcome` cannot.
+- **`account`** — that step *is* the claim, and a claim creates a `Project` with a
+  `metricsId`. You already know who completed, with certainty, joined to an identity. An
+  anonymous self-reported copy is strictly worse data about the one step already measured
+  perfectly.
+
+So `steps` covers exactly the middle of the funnel: the part visible only from the client,
+because a run that fails there never reaches this server at all.
 
 Every string field is drawn from a closed allowlist on the client. **Do not trust that.**
 The client is a published npm package that anyone can fork, patch, or replay — see §6.
@@ -189,7 +201,7 @@ Server-side validation is the whole security model. Three rules:
    *not* stored as-is, and *not* a reason to reject the row. Storing unrecognized strings
    is how a "no free text" store quietly becomes a free-text store.
 2. **Type and bound everything numeric.** `cpus` 1–1024, `durationMs` 0–86,400,000,
-   `exitCode` 0–255, `steps` at most 5, `flags` at most 20. Clamp, do not reject. `/api/debug`'s
+   `exitCode` 0–255, `steps` at most 3, `flags` at most 20. Clamp, do not reject. `/api/debug`'s
    `clampString` / `clampMeta` / `clampEntries` are the pattern.
 3. **Drop unknown keys entirely.** Destructure field by field; never persist an object you
    did not walk. This matters more here than in `/api/debug`: that route stores
@@ -230,9 +242,16 @@ One Mongoose model, `src/models/CliTelemetry.ts`, following the conventions in
 document has one subdocument array:
 
 ```ts
+// Subset of SETUP_STEPS — see §3 for why welcome/account are excluded. Declare it
+// as a filter of the imported constant, not a fresh literal, so a rename upstream
+// breaks loudly here instead of silently dropping a step.
+const TELEMETRY_STEPS = SETUP_STEPS.filter(
+  (s) => s === "generate_oas" || s === "install_sdk" || s === "test",
+);
+
 const StepSchema = new Schema({
-  step:       { type: String, enum: SETUP_STEPS,    required: true },
-  status:     { type: String, enum: SETUP_STATUSES, required: true },
+  step:       { type: String, enum: TELEMETRY_STEPS, required: true },
+  status:     { type: String, enum: SETUP_STATUSES,  required: true },
   durationMs: { type: Number, default: 0 },
 }, { _id: false });
 
@@ -262,7 +281,7 @@ const CliTelemetrySchema = new Schema(
     framework:     { type: String, default: undefined },
     oasSourceKind: { type: String, default: undefined },
 
-    // At most 5. NOT Mixed — unlike DebugLog.entries, this set is closed (§5.3).
+    // At most 3. NOT Mixed — unlike DebugLog.entries, this set is closed (§5.3).
     steps: { type: [StepSchema], default: [] },
 
     // sha256(ip + daily-rotating secret). Never the IP. Compare with
@@ -283,6 +302,7 @@ on indexed columns. Only the funnel touches `steps`. That is the payoff for keep
 event type.
 
 Import `SETUP_STEPS`, `SETUP_STATUSES` and `SETUP_SOURCES` rather than redeclaring them.
+`TELEMETRY_STEPS` is derived from the first, never written out by hand.
 The CLI derives `source` from the same `invocationSource()` these came from, and the step
 vocabulary is deliberately shared with `setup-progress` (§2).
 
@@ -336,10 +356,11 @@ Time range from `searchParams` (`?days=7|30|90`, default 30).
 
 Five panels, matching the five questions the data exists to answer:
 
-1. **`init` funnel** — of runs whose `command` event is `init`, the share reaching each
-   step, and where they stop. The single most valuable number here. Cross-check it against
-   `/admin/unclaimed` (§2) — if the two disagree, one of them is wrong and that is worth
-   knowing.
+1. **`init` funnel** — of all documents with `command: "init"`, the share reaching each of
+   the three steps, and where they stop. The denominator is the document count, not a
+   `welcome` step (§3). The single most valuable number here. Cross-check the tail against
+   claimed `Project` records and against `/admin/unclaimed` (§2) — if they disagree, one
+   of them is wrong and that is worth knowing.
 2. **Time budget** — median `byKind` split across successful `init` runs. Says whether to
    optimize AI passes, package installs, or the waiting.
 3. **Agent share** — `source` and `agent` over time. We believe most runs are

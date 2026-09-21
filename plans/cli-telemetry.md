@@ -64,9 +64,9 @@ customer stall"; telemetry is anonymous, so it answers "what fraction of all run
 here, on which Node version". Probably we want both. What we should not do is build a
 second funnel in ignorance of the first.
 
-If we wire up `setup-progress`, the `step` event's ids below should reuse its
-`SETUP_STEPS` spelling (`generate_oas`, not `generate-oas`) so one step name means one
-thing across both systems. That is the spelling used throughout this document.
+If we wire up `setup-progress`, note it should report the full `SETUP_STEPS` set — it is
+authenticated and joined to a project, so `welcome` and `account` are worth having there.
+Telemetry sends a subset (§3), in the same spelling, so the two stay comparable.
 
 ## 3. What gets collected
 
@@ -80,33 +80,43 @@ plain field aggregations instead of array unwinds.
 
 ### The one event: `step`
 
-Emitted as each `init` plan step completes. Values are exactly the dashboard's existing
-`SETUP_STEPS` (`src/lib/setupProgress.ts`) — **do not invent new step ids**:
+Emitted as each `init` plan step completes. **Three values**, spelled exactly as the
+dashboard's `SETUP_STEPS` (`src/lib/setupProgress.ts`) — this is a strict subset of that
+enum, not a second vocabulary, so a step name still means one thing in both systems:
 
 | id | what it means |
 | --- | --- |
-| `welcome` | got past the welcome screen and picked an agent |
 | `generate_oas` | "Map your API" — found or generated the spec |
 | `install_sdk` | "Install SDK" — package installed, key generated, SDK wired, final checks |
 | `test` | "Test your setup" — a live request was seen |
-| `account` | "Set up account" — specs uploaded, signed in, project claimed |
 
 Fields: `{ step, status, durationMs }`, `status` ∈ `started | done | failed` (the
 dashboard's `SETUP_STATUSES`).
 
-Those five are not a guess — the CLI's own `STEPS` array in `lib/runner.js:10` is exactly
-these four phases, and `welcome` is everything before the plan starts. The vocabulary
-already exists, is already rendered at `/admin/unclaimed`, and matching it means one step
-name means one thing in both systems. If we ever need finer granularity, add it to
-`src/lib/setupProgress.ts` so both systems gain it at once.
+`SETUP_STEPS`' other two values, `welcome` and `account`, are deliberately **not** sent —
+not because they don't matter, but because each is already measured somewhere better:
 
-At most 5 of these per run, and only for `init`. `update`, `context`, `debug` and the
+- **`welcome`** is redundant with the run document itself. Every `init` run produces one
+  telemetry document, so "all `init` runs" is already the funnel's denominator, and it is
+  a truer one than `welcome` — it counts the runs that died *before* the welcome screen
+  too, which `welcome` by definition cannot.
+- **`account`** is the claim, and claiming is precisely what creates a `Project` with a
+  `metricsId` server-side. The dashboard already knows, with certainty and joined to a
+  real identity, who completed. An anonymous, self-reported, best-effort copy of that is
+  strictly worse data about the one step we already measure perfectly.
+
+What is left is exactly the middle of the funnel: the three steps whose outcome is
+visible *only* from the client, because a run that fails in them never reaches the server
+at all. That is the entire reason this dataset exists.
+
+At most 3 of these per run, and only for `init`. `update`, `context`, `debug` and the
 agent commands emit none — their outcome is the whole story.
 
 **This also simplifies the instrumentation.** The earlier draft said "one line per file in
 `steps/`". That is unnecessary: `lib/runner.js` already owns the step lifecycle, already
 emits `debug.log('step.start', ...)`, and already opens a timing span per step
-(`lib/runner.js:346`). Hook it there — four call sites in one file, not nine modules.
+(`lib/runner.js:346`). Hook it there — three call sites in one file (the fourth plan step,
+"Set up account", is skipped), not nine modules.
 
 ### Run properties (`meta`)
 
@@ -194,7 +204,7 @@ log can never leak into telemetry by default.
 
 ### Volume
 
-One HTTP request per CLI run, ~1 KB, at most 5 step entries. A developer running `init`,
+One HTTP request per CLI run, ~1 KB, at most 3 step entries. A developer running `init`,
 having it fail, and re-running it three times produces four requests. There is no
 per-keystroke, per-AI-turn, or per-file event, and there should never be one.
 
@@ -258,7 +268,7 @@ Rules:
   silently. No console output, no retry. This mirrors `trackDebugEvent`
   (`bin/restless.js:199`) and is the single most important rule in the whole plan:
   **telemetry must never be able to slow down, block, or break a run.**
-- The payload is structurally bounded — flat fields plus at most 5 step entries, ~1 KB —
+- The payload is structurally bounded — flat fields plus at most 3 step entries, ~1 KB —
   so there is no trimming path to write. Assert the bound in a test rather than handling
   an overflow that cannot happen without a bug.
 
@@ -342,8 +352,9 @@ statuses, URLs, and server text.
 
 **`lib/runner.js`** — the step lifecycle already lives here: it owns the `STEPS` array
 (line 10), emits `debug.log('step.start', ...)`, and opens a timing span per step (line
-346). Add `telemetry.recordStep(id, status, ms)` alongside those, mapping the four plan
-steps onto `SETUP_STEPS`. Four call sites in one file — `steps/*.js` stays untouched.
+346). Add `telemetry.recordStep(id, status, ms)` alongside those for the first three plan
+steps; "Set up account" is not reported (see §3). Three call sites in one file —
+`steps/*.js` stays untouched.
 
 **`README.md`** — extend the existing `# Privacy` section (line 208). It already discloses
 the registration provenance in exactly the right tone; add two bullets in the same voice,
