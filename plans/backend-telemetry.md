@@ -321,11 +321,9 @@ we find out.
 
 ### What not to build
 
-- **Not Grafana.** There is a ReadMe Grafana org at `readmeio.grafana.net`, but its
-  datasources are Elasticsearch, Loki, Prometheus, Tempo, Graphite, and k6 — there is no
-  Mongo or SQL datasource, so it cannot read this collection, and it is ReadMe's stack
-  rather than Restless's. Piping telemetry there is a project, not a shortcut. Revisit
-  only if Restless adopts that stack generally.
+- **Not Grafana.** ReadMe's Grafana org is a separate company's observability stack. It is
+  out of scope for Restless — do not send data to it, build dashboards in it, or read from
+  it, and do not treat it as a future option to revisit.
 - **Not a third-party analytics vendor.** See §10.
 - **Not alerting, yet.** Nobody knows what normal looks like. Get a month of data first.
 
