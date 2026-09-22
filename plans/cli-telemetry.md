@@ -226,25 +226,28 @@ Resolved once, at startup, in this order — first match wins:
 CI runs stay **on** and are labelled `ci: true`, matching Vercel. They are real usage and
 we want to know how much of it there is.
 
-## 5. First-run notice
+## 5. No first-run notice
 
-Printed once, when `~/.restless/config.json` has no `telemetry.notifiedAt`:
+An earlier draft printed a one-time disclosure at the end of the first run. **It was
+removed deliberately**, and this section is kept at its number to record that rather than
+leave a gap.
 
-```
-  Restless collects anonymous usage data (which command ran, whether it
-  worked, how long it took). No code, paths, or prompts — ever.
-  Opt out: npx restless telemetry disable · https://restless.ai/docs/telemetry
-```
+The CLI now prints nothing about telemetry on an ordinary run. Disclosure lives in three
+places a person has to go looking for: the README's Privacy section, `docs/telemetry.md`
+(which ships in the tarball), and `npx restless telemetry status`.
 
-Rules:
+Worth being clear-eyed about what that changes. "Opt-out with a first-run notice" is the
+model Vercel, Next.js, Turborepo and Homebrew all use, and the notice is the part that
+makes it defensible — it is what turns "on by default" into something the user was told
+about. Without it, the only disclosure is in documentation most people will not read.
+That is a legitimate position and plenty of tools take it, but it is a privacy posture
+decision rather than an engineering one, and it belongs with whoever owns that (see §9.2).
 
-- **stderr, dimmed, at the END of the run**, not the start. `init` owns the whole screen
-  (`printLogo`, `animateLogoIn`, plan redraws in `lib/runner.js`); a banner printed first
-  gets wiped by the next `\x1b[H\x1b[J`, and a banner printed into the middle of the frame
-  corrupts it. End-of-run on stderr is the only slot that is safe on every path.
-- Emitted from the same flush hook as the send, so every exit path covers it.
-- `notifiedAt` is written even when the run is non-interactive; an agent will not read it,
-  but the human whose machine it is gets it once and we do not nag on every run.
+If it is ever reinstated: print it to **stderr at the END of a run**, never the start.
+`init` owns the whole screen (`printLogo`, `animateLogoIn`, plan redraws in
+`lib/runner.js`), so a banner printed first is wiped by the next `\x1b[H\x1b[J` and one
+printed mid-frame corrupts it. End-of-run on stderr is the only slot that is safe on
+every path.
 
 ## 6. The `telemetry` command
 
@@ -277,7 +280,7 @@ Rules:
 ### New files
 
 **`lib/user-config.js`** (~70 lines) — read/write `~/.restless/config.json`.
-`{ version: 1, telemetry: { enabled, notifiedAt, anonymousId } }`. Honors
+`{ version: 1, telemetry: { enabled, anonymousId } }`. Honors
 `RESTLESS_CONFIG_DIR` for tests, same trick as `RESTLESS_DEBUG_DIR`. Every read is
 try/catch → defaults; a corrupt or unreadable config must never be fatal. Writes are
 merge-not-overwrite (`lib/cli-token.js:44` learned this the hard way) and `0600`.
@@ -314,7 +317,6 @@ the backend agent; `plans/backend-telemetry.md` §2 references it as the source 
   anywhere (assert on the serialized JSON string, not the object)
 - a `fetch` that rejects, hangs past the timeout, and returns 500 — all three leave the
   process exiting normally with the same exit code
-- first-run notice fires once, and `notifiedAt` persists
 - `telemetry enable` / `disable` round-trip through `RESTLESS_CONFIG_DIR`
 
 **`tests/telemetry-schema.test.js`** — asserts the code's allowlists and the schema's
@@ -367,7 +369,7 @@ one for what telemetry sends and one for `npx restless telemetry disable`.
    wired, still no network.
 3. `lib/debug.js` async hooks + `bin/restless.js` wiring.
 4. Step and error instrumentation.
-5. Docs, README, first-run notice.
+5. Docs and README.
 
 **Do not publish to npm until `plans/backend-telemetry.md` is deployed.** Telemetry is on
 by default the moment a published install runs, so a release that lands ahead of the

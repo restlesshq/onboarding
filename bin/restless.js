@@ -52,9 +52,9 @@ const debugEnabled = debug.init({ argv: process.argv });
 debug.attachExitHandlers();
 
 // ── Anonymous usage telemetry ─────────────────────────────────────────────
-// Opt-out, disclosed once, enum-only - see `lib/telemetry.js` for exactly
-// what can leave this machine, and `docs/telemetry.md` for the user-facing
-// version.
+// Opt-out and enum-only - see `lib/telemetry.js` for exactly what can leave
+// this machine. The CLI prints nothing about it: disclosure lives in
+// `docs/telemetry.md`, the README, and `restless telemetry status`.
 //
 // Registered as a finalize hook so it rides the exit path debug.js already
 // owns: a normal return, `flushAndExit`, `beforeExit`, an uncaught throw,
@@ -79,27 +79,7 @@ debug.addFinalizeHook(async (exitCode) => {
     outcome,
     summary: summarize(debug.snapshot()),
   });
-  printTelemetryNotice();
 });
-
-/**
- * The one-time disclosure, printed at the END of a run rather than the
- * start. `init` owns the whole screen - logo animation, plan redraws,
- * full-screen clears in `lib/runner.js` - so a banner at the top is either
- * wiped by the next `\x1b[H\x1b[J` or corrupts the frame it lands in.
- * End-of-run on stderr is the only slot that is safe on every path.
- */
-function printTelemetryNotice() {
-  if (!telemetry.isSending() || !telemetry.needsNotice()) return;
-  try {
-    process.stderr.write(
-      `\n  \x1b[2mRestless collects anonymous usage data (which command ran, whether it\n`
-      + `  worked, how long it took). No code, paths, or prompts - ever.\n`
-      + `  Opt out: npx ${CLI_NAME} telemetry disable · ${TELEMETRY_DOCS_URL}\x1b[0m\n`,
-    );
-    telemetry.markNoticeShown();
-  } catch {}
-}
 
 // ── `--timings`: profile this run ─────────────────────────────────────────
 // A development flag. Spans are recorded on every run regardless (they ride

@@ -287,14 +287,6 @@ describe('the telemetry setting', () => {
     expect(t.userConfig.loadConfig().telemetry.enabled).toBe(true);
   });
 
-  it('shows the first-run notice once', async () => {
-    const t = await fresh({ RESTLESS_TELEMETRY_FORCE: '1' });
-    restore = t.restore;
-    expect(t.telemetry.needsNotice()).toBe(true);
-    t.telemetry.markNoticeShown();
-    expect(t.telemetry.needsNotice()).toBe(false);
-  });
-
   it('status does not mint an id on a machine that has sent nothing', async () => {
     const t = await fresh({ RESTLESS_TELEMETRY_DISABLED: '1' });
     restore = t.restore;
