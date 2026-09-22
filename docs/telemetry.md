@@ -36,8 +36,10 @@ RESTLESS_TELEMETRY_DEBUG=1 npx restless init
 ```
 
 Prints the payload to stderr, prefixed `[telemetry]`, and sends **nothing**.
-This is the honest answer to "what do you actually collect" — it is the same
-payload the CLI would have sent, not a description of it.
+This is the honest answer to "what do you actually collect": it is the same
+payload the CLI would have sent, not a description of it. It also writes
+nothing: on a machine with no anonymous id yet, the one it prints is a
+throwaway that is never saved.
 
 ## What it collects
 

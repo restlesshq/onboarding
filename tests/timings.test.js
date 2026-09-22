@@ -387,6 +387,18 @@ describe('plan spans (lib/runner.js)', () => {
 
     expect(spans(debug).map((e) => e.label).sort()).toEqual(['Log in', 'Set up account']);
   });
+
+  it('logs the fatal step as failed, once, with its duration', async () => {
+    const { debug, plan } = await freshPlan();
+    plan.makeUpdater(1)({ status: 'active' });
+    plan.markActiveFailed();
+    plan.markActiveFailed();
+
+    const failed = debug.snapshot().entries.filter((e) => e.type === 'step.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].index).toBe(1);
+    expect(typeof failed[0].durationMs).toBe('number');
+  });
 });
 
 describe('background spans', () => {

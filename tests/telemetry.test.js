@@ -151,6 +151,16 @@ describe('the payload carries only allowlisted values', () => {
     expect(JSON.stringify(payload)).not.toContain('some-internal-framework');
   });
 
+  it('files "Next.js" and "Express.js" under their frameworks, and keeps nestjs', async () => {
+    const t = await fresh({ RESTLESS_TELEMETRY_FORCE: '1' });
+    restore = t.restore;
+    t.telemetry.init({ argv: process.argv });
+    for (const [label, expected] of [['Next.js', 'next'], ['Express.js', 'express'], ['NestJS', 'nestjs'], ['Fastify', 'fastify']]) {
+      t.telemetry.recordDetect({ language: 'Node.js', framework: label });
+      expect(t.telemetry.buildPayload({}).framework).toBe(expected);
+    }
+  });
+
   it('reduces an error to a code, never a message or a stack', async () => {
     const t = await fresh({ RESTLESS_TELEMETRY_FORCE: '1' });
     restore = t.restore;
@@ -285,6 +295,14 @@ describe('the telemetry setting', () => {
 
     expect(t.telemetry.setStatus(true)).toBe(true);
     expect(t.userConfig.loadConfig().telemetry.enabled).toBe(true);
+  });
+
+  it('debug mode prints an id without writing one to disk', async () => {
+    const t = await fresh({ RESTLESS_TELEMETRY_DEBUG: '1', RESTLESS_TELEMETRY_DISABLED: '1' });
+    restore = t.restore;
+    t.telemetry.init({ argv: process.argv });
+    expect(t.telemetry.buildPayload({}).anonymousId).toHaveLength(36);
+    expect(t.telemetry.describeStatus().anonymousId).toBe(null);
   });
 
   it('status does not mint an id on a machine that has sent nothing', async () => {

@@ -63,7 +63,7 @@ debug.attachExitHandlers();
 // reads has already been closed out.
 // Filled in by the exit paths that know more than `beforeExit` does. A run
 // that simply ends is `ok`; ctrl-c and fatal errors say otherwise below.
-const telemetryExit = { code: null, outcome: 'ok' };
+const telemetryExit = { outcome: 'ok' };
 
 telemetry.init({ argv: process.argv });
 debug.addFinalizeHook(async (exitCode) => {
@@ -71,11 +71,11 @@ debug.addFinalizeHook(async (exitCode) => {
   // The handlers below know things the exit code doesn't (a ctrl-c exits 0,
   // and is not a failure); the exit code covers everything else, including
   // the `flushAndExit(1)` paths that never raise.
-  const code = telemetryExit.code ?? exitCode;
   const outcome = telemetryExit.outcome !== 'ok' ? telemetryExit.outcome
-    : (typeof code === 'number' && code > 0 ? 'error' : 'ok');
+    : debug.wasInterrupted() ? 'interrupted'
+      : (typeof exitCode === 'number' && exitCode > 0 ? 'error' : 'ok');
   await telemetry.flush({
-    exitCode: code,
+    exitCode,
     outcome,
     summary: summarize(debug.snapshot()),
   });
@@ -136,9 +136,7 @@ process.on('SIGINT', () => {
   }
   // A ctrl-c is not a failure, and counting it as one would make the funnel
   // read as though setup breaks far more often than it does.
-  telemetryExit.outcome = 'interrupted';
-  telemetryExit.code = 0;
-  debug.flushAndExit(0);
+  debug.abortExit(0);
 });
 
 // Last-resort safety net. Any thrown error or rejected promise that nothing
