@@ -23,7 +23,7 @@ import setupAccount from '../steps/setup-account.js';
 import testSetup from '../steps/test-setup.js';
 import runInteractiveUpdate from '../steps/update-interactive.js';
 import runFlagUpdate, { parseUpdateFlags, UPDATE_FLAGS } from '../steps/update-flags.js';
-import { SITE_URL, CALENDLY_URL, CLI_NAME, DEMO_REPO, DEMO_REPO_SSH_URL, MAX_OAS_BYTES } from '../lib/config.js';
+import { SITE_URL, CALENDLY_URL, CLI_NAME, DEMO_REPO, DEMO_REPO_SSH_URL, MAX_OAS_BYTES, TELEMETRY_DOCS_URL } from '../lib/config.js';
 import { cloneDemoRepo, DEMO_DIR_NAME } from '../lib/demo-repo.js';
 import { isInteractive, isAgent, detectAgent, agentLabel } from '../lib/env.js';
 import { buildAgentPlan } from '../lib/agent-plan.js';
@@ -43,12 +43,43 @@ import contextStep from '../steps/context.js';
 import { signIn, pickProject, clearAccountToken, reportSignInFailure } from '../lib/context-auth.js';
 import * as debug from '../lib/debug.js';
 import * as timings from '../lib/timings.js';
-import { renderReport, renderJson } from '../lib/timings-report.js';
+import * as telemetry from '../lib/telemetry.js';
+import { renderReport, renderJson, summarize } from '../lib/timings-report.js';
 
 // Initialize debug capture FIRST, before anything else writes to stdout -
 // the stream wrappers need to be in place to record the welcome screen.
 const debugEnabled = debug.init({ argv: process.argv });
 debug.attachExitHandlers();
+
+// ── Anonymous usage telemetry ─────────────────────────────────────────────
+// Opt-out and enum-only - see `lib/telemetry.js` for exactly what can leave
+// this machine. The CLI prints nothing about it: disclosure lives in
+// `docs/telemetry.md`, the README, and `restless telemetry status`.
+//
+// Registered as a finalize hook so it rides the exit path debug.js already
+// owns: a normal return, `flushAndExit`, `beforeExit`, an uncaught throw,
+// and the SIGINT handler below all funnel through `debug.finalize`, which
+// awaits its hooks. Registered AFTER the timings hook so the span data it
+// reads has already been closed out.
+// Filled in by the exit paths that know more than `beforeExit` does. A run
+// that simply ends is `ok`; ctrl-c and fatal errors say otherwise below.
+const telemetryExit = { outcome: 'ok' };
+
+telemetry.init({ argv: process.argv });
+debug.addFinalizeHook(async (exitCode) => {
+  timings.closeOpenSpans('run-ended');
+  // The handlers below know things the exit code doesn't (a ctrl-c exits 0,
+  // and is not a failure); the exit code covers everything else, including
+  // the `flushAndExit(1)` paths that never raise.
+  const outcome = telemetryExit.outcome !== 'ok' ? telemetryExit.outcome
+    : debug.wasInterrupted() ? 'interrupted'
+      : (typeof exitCode === 'number' && exitCode > 0 ? 'error' : 'ok');
+  await telemetry.flush({
+    exitCode,
+    outcome,
+    summary: summarize(debug.snapshot()),
+  });
+});
 
 // ── `--timings`: profile this run ─────────────────────────────────────────
 // A development flag. Spans are recorded on every run regardless (they ride
@@ -103,7 +134,9 @@ process.on('SIGINT', () => {
   if (setupInProgress) {
     console.log(dim(`\n  Setup interrupted. Run \`npx ${CLI_NAME} init\` again to resume.\n`));
   }
-  debug.flushAndExit(0);
+  // A ctrl-c is not a failure, and counting it as one would make the funnel
+  // read as though setup breaks far more often than it does.
+  debug.abortExit(0);
 });
 
 // Last-resort safety net. Any thrown error or rejected promise that nothing
@@ -113,6 +146,7 @@ function _surfaceFatal(err) {
   // FatalExit is the sentinel `fatalError` throws to stop the calling
   // stack - the error has already been reported and an async exit is in
   // flight. Just keep the screen alive while the exit completes.
+  telemetryExit.outcome = 'error';
   if (isFatalExit(err)) {
     process.stdout.write('\x1b[?25h');
     return;
@@ -467,6 +501,7 @@ function printHelp() {
     ['context', 'Read this repo and teach the AI how your API is meant to be used'],
     ['debug <request-id>', 'Inspect a request, ask AI about it, or have it fixed for you'],
     ['update [projectId]', 'Refresh your spec, edit settings, and sync both to the dashboard'],
+    ['telemetry', 'Show or change whether anonymous usage data is sent'],
     ['help', 'Show this help'],
     ['--version', 'Print the installed CLI version'],
   ];
@@ -1755,6 +1790,61 @@ if (command === '--version' || command === '-v' || command === 'version') {
   console.log(green('  ✓ Reset complete.'));
   console.log('');
   await debug.flushAndExit(0);
+} else if (command === 'telemetry') {
+  // `status` | `enable` | `disable`, mirroring `vercel telemetry`. Bare
+  // `telemetry` is `status`, because someone typing it wants to know where
+  // they stand, not to be told they mistyped.
+  const sub = process.argv[3] || 'status';
+  const { mode, reason, endpoint, anonymousId: anonId } = telemetry.describeStatus();
+
+  if (sub === 'status') {
+    // Spell out WHICH rule decided it. "Disabled" with no reason is the
+    // kind of answer that turns into a support thread.
+    const explain = {
+      'debug-mode': 'RESTLESS_TELEMETRY_DEBUG=1 - collected and printed, never sent',
+      'env-disabled': 'RESTLESS_TELEMETRY_DISABLED=1 is set for this run',
+      'do-not-track': 'DO_NOT_TRACK=1 is set',
+      'opted-out': `you ran \`${CLI_NAME} telemetry disable\``,
+      forced: 'RESTLESS_TELEMETRY_FORCE=1 is set',
+      'linked-install': 'this is a local checkout or npm link, not a published install',
+      'default-on': 'on by default; opt out any time',
+    }[reason] || reason;
+
+    console.log('');
+    console.log(`  Telemetry is ${mode === 'on' ? green('enabled') : mode === 'debug' ? yellow('debug only') : dim('disabled')}.`);
+    console.log(`  ${dim(explain)}`);
+    console.log('');
+    console.log(`  ${dim('Endpoint')}  ${dim(endpoint)}`);
+    console.log(`  ${dim('Machine')}   ${dim(anonId || 'no id yet - nothing has been sent from here')}`);
+    console.log('');
+    console.log(`  ${dim(`See exactly what would be sent: ${cyan('RESTLESS_TELEMETRY_DEBUG=1')}${'\x1b[2m'} on any command.`)}`);
+    console.log(`  ${dim(TELEMETRY_DOCS_URL)}`);
+    console.log('');
+  } else if (sub === 'enable' || sub === 'disable') {
+    const want = sub === 'enable';
+    if (telemetry.setStatus(want)) {
+      console.log('');
+      console.log(`  ${green('✓')} Telemetry ${want ? 'enabled' : 'disabled'}.`);
+      // An opt-out that another rule would have overridden anyway is worth
+      // saying, so nobody thinks the setting did not take.
+      if (want && mode !== 'on' && reason !== 'opted-out') {
+        console.log(`  ${dim(`Note: still off for this run - ${reason}.`)}`);
+      }
+      console.log('');
+    } else {
+      console.log('');
+      console.log(`  ${red('✗')} Couldn't write ${dim('~/.restless/config.json')}.`);
+      console.log(`  ${dim(`Set ${cyan('RESTLESS_TELEMETRY_DISABLED=1')}${'\x1b[2m'} in your environment instead.`)}`);
+      console.log('');
+      await debug.flushAndExit(1);
+    }
+  } else {
+    console.log('');
+    console.log(`  ${red('✗')} Unknown subcommand ${bold(sub)}.`);
+    console.log(`  ${dim(`Usage: npx ${CLI_NAME} telemetry [status|enable|disable]`)}`);
+    console.log('');
+    await debug.flushAndExit(1);
+  }
 } else if (command === 'clear') {
   const cwd = process.cwd();
   const { rootDir: clearRoot } = resolveProjectDirs(cwd);

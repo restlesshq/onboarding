@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CLI Telemetry Payload",
+  "description": "What `npx restless` sends to POST /api/telemetry, once per run, at exit. Anonymous and opt-out: see docs/telemetry.md. This file is the wire contract between lib/telemetry.js and the dashboard's ingest route - the server keeps its own copy of every enum below and rejects nothing, mapping unrecognized values to unknown/other rather than storing them. Kept in step with the code by tests/telemetry-schema.test.js.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "description": "Payload version. Bump when a field's meaning changes, not when one is added.",
+      "const": 1
+    },
+
+    "anonymousId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Stable per machine, stored in ~/.restless/config.json. A random UUID - never derived from hostname, username, MAC, or working directory, so it counts machines without being able to name one."
+    },
+    "sessionId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Per run. The server's dedupe key, so a retried flush cannot double-count."
+    },
+
+    "command": {
+      "type": "string",
+      "description": "Which command ran. Anything unrecognized is reported as `unknown` rather than as typed - raw argv is never sent.",
+      "enum": [
+        "init", "setup", "supercharge", "context", "debug", "update", "guide",
+        "key", "register", "verify", "login", "claim", "reset", "clear",
+        "timings", "submit-debug", "telemetry", "help", "version", "unknown"
+      ]
+    },
+    "flags": {
+      "type": "array",
+      "description": "Allowlisted flag NAMES present in argv. Values never travel with them. Limited to flags that change what the CLI does, not ones that shape its output.",
+      "items": {
+        "type": "string",
+        "enum": [
+          "--agent", "--self-drive", "--dir", "--oas", "--url", "--project",
+          "--full", "--refresh", "--dry-run", "--debug"
+        ]
+      },
+      "maxItems": 10
+    },
+    "outcome": {
+      "type": "string",
+      "description": "How the run ended.",
+      "enum": ["ok", "error", "interrupted"]
+    },
+    "exitCode": { "type": ["integer", "null"], "minimum": 0, "maximum": 255 },
+    "errorCode": {
+      "type": ["string", "null"],
+      "description": "A code assigned at the raise site. Never a message, a stack, or a server's response text - all of those interpolate URLs, statuses, and sometimes the user's own input.",
+      "enum": [
+        "unknown", "unsupported-stack", "no-endpoints-found", "oas-generation-failed",
+        "oas-upload-failed", "sdk-install-failed", "sdk-wiring-failed",
+        "test-request-failed", "account-claim-failed", "network-unreachable",
+        "agent-unavailable", null
+      ]
+    },
+    "errorStep": {
+      "type": ["string", "null"],
+      "description": "Which step the run died in, when known.",
+      "enum": ["generate_oas", "install_sdk", "test", null]
+    },
+    "durationMs": { "type": "integer", "minimum": 0, "maximum": 86400000 },
+    "byKind": {
+      "type": "object",
+      "description": "Wall-clock totals per timing category, from the spans the run already recorded (lib/timings.js). Totals only - span labels are never sent, since a few are built at call time.",
+      "properties": {
+        "ai": { "type": "integer", "minimum": 0 },
+        "exec": { "type": "integer", "minimum": 0 },
+        "net": { "type": "integer", "minimum": 0 },
+        "scan": { "type": "integer", "minimum": 0 },
+        "wait": { "type": "integer", "minimum": 0 },
+        "anim": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+
+    "cliVersion": { "type": "string" },
+    "cliName": {
+      "type": "string",
+      "description": "Which bin name dispatched to us. Allowlisted rather than sent through, because it is derived from argv[1].",
+      "enum": ["restless", "api", "other"]
+    },
+    "platform": { "type": "string", "description": "process.platform" },
+    "nodeVersion": { "type": "string", "description": "process.version" },
+    "ci": {
+      "type": "boolean",
+      "description": "Whether CI is set. Which CI vendor is deliberately not collected - it would not change anything we do."
+    },
+    "source": {
+      "type": "string",
+      "description": "Whether a human or a coding agent invoked this run. Mirrors the dashboard's SETUP_SOURCES.",
+      "enum": ["cli", "agent"]
+    },
+    "agent": {
+      "type": ["string", "null"],
+      "description": "Which coding agent, when one identified itself. Already normalized to a slug by lib/env.js."
+    },
+
+    "language": {
+      "type": "string",
+      "enum": ["javascript", "typescript", "python", "ruby", "go", "csharp", "java", "php", "rust", "other"]
+    },
+    "framework": {
+      "type": "string",
+      "enum": [
+        "express", "fastify", "nestjs", "koa", "hapi", "next", "hono",
+        "flask", "django", "fastapi", "rails", "sinatra", "gin", "echo", "chi", "fiber",
+        "other"
+      ]
+    },
+    "oasSourceKind": {
+      "type": "string",
+      "description": "How the spec got here. Mirrors oasSource.kind in settings.schema.json.",
+      "enum": ["ai", "native", "found", "file", "url", "describe", "agent", "other"]
+    },
+
+    "steps": {
+      "type": "array",
+      "description": "The only event stream in the payload, and only `init` produces one. A strict subset of the dashboard's SETUP_STEPS, in its spelling: `welcome` is redundant with the payload itself (a truer funnel denominator, since it also counts runs that died before the welcome screen) and `account` is the claim, which the server already records with certainty and joined to an identity.",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": { "type": "string", "enum": ["generate_oas", "install_sdk", "test"] },
+          "status": { "type": "string", "enum": ["started", "done", "failed"] },
+          "durationMs": { "type": "integer", "minimum": 0, "maximum": 86400000 }
+        },
+        "required": ["step", "status"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion", "anonymousId", "sessionId", "command", "flags",
+    "outcome", "durationMs", "cliVersion", "cliName", "platform",
+    "nodeVersion", "ci", "source", "steps"
+  ],
+  "additionalProperties": false
+}

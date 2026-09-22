@@ -177,6 +177,23 @@ describe('addFinalizeHook', () => {
     expect(written.entries.map((e) => e.type)).toContain('from-hook');
   });
 
+  it('makes a second finalize wait for the first, so an exit cannot cut off the local copy', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    let release;
+    debug.addFinalizeHook(() => new Promise((r) => { release = r; }));
+
+    const first = debug.finalize({ exitCode: 1 });
+    let secondDone = false;
+    const second = debug.finalize({ exitCode: 1 }).then(() => { secondDone = true; });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(secondDone).toBe(false);
+
+    release();
+    await Promise.all([first, second]);
+    expect(jsonFiles().length).toBe(1);
+  });
+
   it('swallows a throwing hook rather than failing the exit', async () => {
     const debug = await freshDebug();
     debug.init({ argv: ['node', 'api', 'init'] });
@@ -186,6 +203,18 @@ describe('addFinalizeHook', () => {
     await expect(debug.finalize({ exitCode: 0 })).resolves.toBeUndefined();
     const written = JSON.parse(fs.readFileSync(path.join(tmpDir, jsonFiles()[0]), 'utf8'));
     expect(written.entries.map((e) => e.type)).toContain('still-ran');
+  });
+});
+
+describe('abortExit', () => {
+  it('marks the run interrupted before exiting', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => {});
+    expect(debug.wasInterrupted()).toBe(false);
+    await debug.abortExit(130);
+    expect(debug.wasInterrupted()).toBe(true);
+    expect(exit).toHaveBeenCalledWith(130);
   });
 });
 
