@@ -19,6 +19,7 @@ import {
   oasSourceFacets,
 } from '../lib/oas-source.js';
 import { fetchDashboardSpec, compareWithDashboard } from '../lib/project-sync.js';
+import { combineSpecFiles } from '../lib/oas-combine.js';
 import { generateOasWithAi, locateOasWithAi, pickOasCandidate, describeCoverageGap } from './generate-oas.js';
 import { describeCheck } from './update-render.js';
 import { loadCachedToken } from '../lib/cli-token.js';
@@ -171,8 +172,20 @@ const REFRESH_STRATEGIES = {
     return {
       ok: true,
       oasFile: res.oasFile,
-      oasSource: { kind: 'describe', summary: res.summary || summary },
+      oasSource: res.combinedPaths
+        ? { kind: 'combined', paths: res.combinedPaths }
+        : { kind: 'describe', summary: res.summary || summary },
     };
+  },
+
+  async combine({ apiEntry, rootDir, destDir }) {
+    const paths = apiEntry.oasSource?.paths;
+    if (!paths?.length) return { ok: false, error: 'No specs recorded to combine.' };
+    const res = await combineSpecFiles({
+      rootDir, paths, destFile: path.join(path.relative(rootDir, destDir), 'openapi.json'),
+    });
+    if (!res.ok) return { ok: false, error: res.error, detail: res.detail };
+    return { ok: true, oasFile: res.oasFile, oasSource: { kind: 'combined', paths } };
   },
 
   generate(opts) { return generateInto(opts, false); },
@@ -445,6 +458,7 @@ export function buildActions(apiEntry) {
 const ACTION_STRATEGY = {
   refetch: 'fetch',
   replay: 'locate',
+  recombine: 'combine',
   regenerate: 'generate',
   'regenerate-native': 'generate-native',
 };

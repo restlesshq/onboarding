@@ -38,7 +38,9 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.89",
-    "js-yaml": "^4.1.1"
+    "@readme/openapi-parser": "^9.0.0",
+    "js-yaml": "^4.1.1",
+    "oas-normalize": "^18.0.2"
   },
   "devDependencies": {
     "vitest": "^4.1.2"

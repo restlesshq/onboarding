@@ -41,6 +41,33 @@ RESTLESS_SKIP_STACK_CHECK=1 npx restless init
    artifact, and it holds no credentials.
  - `RESTLESS_KEY` in `.env` - your project's write key. Keep this out of git.
 
+# A spec split across files
+
+If your spec pulls parts of itself in from other files with `$ref`
+(`$ref: ./paths/users.yaml`), the CLI bundles those in before it uploads, so the
+dashboard gets one complete spec. Your files stay as they are. A spec with no
+external refs is uploaded exactly as written. If a ref points at a file that
+isn't there, setup says which one when you pick the spec, rather than uploading
+a spec with holes in it.
+
+# One API, several spec files
+
+A Restless project is one API with one spec. If yours is split across several
+spec files, setup lists "Combine your specs into one" as the last choice
+whenever it finds more than one (picking a single spec is still the default).
+Untick any that aren't part of this API, such as test fixtures, and it writes
+the combined spec to `.restless/openapi.json`. Your files are only ever read.
+
+ - Each one is bundled first if it's split across files with `$ref`s.
+ - Swagger 2.0 is converted to OpenAPI 3.0, so it can be combined with OpenAPI 3.0 specs.
+ - A component defined differently in two files is renamed with the file's name
+   (`Error` in `billing.yaml` becomes `BillingError`), and setup lists every rename.
+ - It refuses, and tells you why, when two files define the same endpoint, point
+   at different servers (those are separate APIs, so set each up on its own), or
+   mix OpenAPI 3.0 and 3.1.
+
+`npx restless update` re-combines the same files the next time you refresh.
+
 # Running inside a coding agent
 
 If you run `npx restless init` inside Claude Code or Codex, it doesn't quietly drive
@@ -101,6 +128,7 @@ your spec came from:
 | a URL | re-fetches that URL | yes |
 | a file you maintain | re-reads it. We never regenerate over your file | yes |
 | a command or location you described | runs that again | yes |
+| several specs you combined | re-reads and re-combines them | yes |
 | your framework's generator | runs it again, then fills gaps from your routes | yes |
 | our AI reading your routes | reads them again | on request |
 
