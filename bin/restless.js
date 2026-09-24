@@ -11,6 +11,7 @@ import { runAI, loadPrompt, languagePromptVars, setProvider } from '../lib/ai.js
 import { createPlanManager } from '../lib/runner.js';
 import { resolveProjectDirs, findGitRoot, isGitIgnored } from '../lib/project.js';
 import { countOperations } from '../lib/oas-parse.js';
+import { readSpecForUpload } from '../lib/oas-bundle.js';
 import { setGitRoot } from '../lib/pathGuard.js';
 import { flagValue, positionalArg } from '../lib/args.js';
 import generateOas from '../steps/generate-oas.js';
@@ -1382,7 +1383,14 @@ if (command === '--version' || command === '-v' || command === 'version') {
 
   // Checked here, not at upload time: an agent can still trim the spec now,
   // where at claim time the user just hears their new project has none.
-  const oasBytes = Buffer.byteLength(oasText, 'utf8');
+  const upload = readSpecForUpload(oasAbs, oasFlag);
+  if (!upload.ok) {
+    console.log(red(`\n  ✗ ${upload.error}`));
+    if (upload.detail) console.log(dim(`  ${upload.detail}`));
+    console.log(dim('  The spec is uploaded as one document, so every $ref has to resolve.\n'));
+    await debug.flushAndExit(1);
+  }
+  const oasBytes = Buffer.byteLength(upload.raw, 'utf8');
   if (oasBytes > MAX_OAS_BYTES) {
     const mb = (n) => `${(n / (1024 * 1024)).toFixed(1)} MB`;
     console.log(red(`\n  ✗ ${oasFlag} is ${mb(oasBytes)} - over the ${mb(MAX_OAS_BYTES)} the dashboard accepts.`));

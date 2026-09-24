@@ -115,7 +115,7 @@
     "oasSourceKind": {
       "type": "string",
       "description": "How the spec got here. Mirrors oasSource.kind in settings.schema.json.",
-      "enum": ["ai", "native", "found", "file", "url", "describe", "agent", "other"]
+      "enum": ["ai", "native", "found", "file", "url", "describe", "combined", "agent", "other"]
     },
 
     "steps": {

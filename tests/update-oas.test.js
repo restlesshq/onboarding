@@ -87,6 +87,16 @@ describe('buildActions picks the primary action from provenance', () => {
     }
   });
 
+  it('re-combines a combined spec, and falls back when its inputs were lost', () => {
+    const actions = buildActions({
+      oasFile: MANAGED_OAS_FILE,
+      oasSource: { kind: 'combined', paths: ['a.yaml', 'b.yaml'] },
+    });
+    expect(actions[0].key).toBe('recombine');
+    expect(actions[0].label).toContain('2 specs');
+    expect(keys({ oasFile: MANAGED_OAS_FILE, oasSource: { kind: 'combined' } })[0]).toBe('regenerate');
+  });
+
   it('degrades to regenerating when a url source has lost its url', () => {
     // Half-written provenance must not produce an action that can't run.
     expect(keys({ oasFile: MANAGED_OAS_FILE, oasSource: { kind: 'url' } })[0]).toBe('regenerate');
@@ -204,7 +214,7 @@ describe('pushOas', () => {
 describe('which kinds can be checked, derived from the source table', () => {
   it('covers every kind that has a source to go back to', () => {
     expect([...autoCheckKinds()].sort()).toEqual([
-      'describe', 'file', 'found', 'native', 'url',
+      'combined', 'describe', 'file', 'found', 'native', 'url',
     ]);
   });
 
@@ -218,7 +228,7 @@ describe('which kinds can be checked, derived from the source table', () => {
   });
 
   it('is the subset that needs no agent pass', () => {
-    expect([...noAgentKinds()].sort()).toEqual(['file', 'found', 'url']);
+    expect([...noAgentKinds()].sort()).toEqual(['combined', 'file', 'found', 'url']);
   });
 
   it('is a strict subset of what the interactive flow checks', () => {
@@ -318,6 +328,37 @@ describe('checkForSpecChanges for a spec on disk', () => {
       rootDir: tmp, apiEntry: entry({ oasSource: { kind: 'url' } }),
     });
     expect(res.kind).toBe('failed');
+  });
+
+  describe('a combined spec', () => {
+    const combinedEntry = (over = {}) => entry({
+      oasFile: MANAGED_OAS_FILE,
+      oasSource: { kind: 'combined', paths: ['docs/openapi.json', 'docs/orgs.json'] },
+      ...over,
+    });
+    const orgs = (paths) => fs.writeFileSync(
+      path.join(tmp, 'docs', 'orgs.json'),
+      JSON.stringify({ openapi: '3.0.0', paths }),
+    );
+
+    it('rebuilds from its inputs and stages the result without touching them', async () => {
+      orgs({ '/orgs': { get: {} } });
+      const before = fs.readFileSync(path.join(tmp, 'docs', 'openapi.json'), 'utf8');
+      const res = await checkForSpecChanges({ rootDir: tmp, apiEntry: combinedEntry() });
+      expect(res.kind).toBe('staged');
+      expect(res.targetFile).toBe(MANAGED_OAS_FILE);
+      expect(res.diff.added).toEqual(['GET /orgs', 'GET /pets']);
+      expect(res.oasSource).toEqual({ kind: 'combined', paths: ['docs/openapi.json', 'docs/orgs.json'] });
+      expect(fs.readFileSync(path.join(tmp, 'docs', 'openapi.json'), 'utf8')).toBe(before);
+      expect(applySpecChange({ rootDir: tmp, check: res })).toBe(MANAGED_OAS_FILE);
+    });
+
+    it('fails soft, with the reason, when the inputs now conflict', async () => {
+      orgs({ '/pets': { get: {} } });
+      const res = await checkForSpecChanges({ rootDir: tmp, apiEntry: combinedEntry() });
+      expect(res.kind).toBe('failed');
+      expect(res.reason).toContain('GET /pets is in both');
+    });
   });
 
   it('cleanRefreshTemp is safe when there is nothing to clean', () => {

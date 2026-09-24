@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 import { runAI, loadPrompt } from '../lib/ai.js';
 import { buildApiSourceBlock, buildSourceBlock } from '../lib/inline-source.js';
 import { mergeSpecs, planSpecGroups, countOperations as countMergedOperations } from '../lib/oas-merge.js';
-import { bold, dim, green, red, yellow, cyan, ask, askWithPreview, singleSelect } from '../lib/ui.js';
+import { bold, dim, green, red, yellow, cyan, ask, askWithPreview, singleSelect, multiSelect } from '../lib/ui.js';
 import { guessBaseUrl } from '../lib/base-url.js';
 import { loadSettings, saveSettings, upsertApi, generatePrefix } from '../lib/settings.js';
 import * as telemetry from '../lib/telemetry.js';
@@ -16,6 +16,8 @@ import { detectStack, stackCheckDisabled, unsupportedStackMessage } from '../lib
 import { SUPPORTED_LANGUAGES_LABEL } from '../lib/sdk-writers/index.js';
 import { extractJson } from '../lib/extract-json.js';
 import { findOasCandidates } from '../lib/find-oas.js';
+import { combineSpecFiles, combinableSpecs, describeRenames, summarizeSpecList } from '../lib/oas-combine.js';
+import { readSpecForUpload } from '../lib/oas-bundle.js';
 import { loadOas } from '../lib/oas-auth.js';
 import { findTestCandidates, buildCurl } from '../lib/test-endpoint.js';
 import { safeWriteFileSync, safeMkdirSync } from '../lib/pathGuard.js';
@@ -850,6 +852,8 @@ export async function locateOasWithAi({
     if (!validation.ok) {
       return { ok: false, error: "Found something, but it didn't parse as a valid spec." };
     }
+    const refs = readSpecForUpload(oasFileAbsolute, destFile);
+    if (!refs.ok) return { ok: false, error: refs.error, detail: refs.detail };
     return {
       ok: true,
       oasFile: destFile,
@@ -874,13 +878,30 @@ export async function locateOasWithAi({
     }
   }
 
+  if (chosen.combine) {
+    const combined = await combineSpecFiles({ rootDir, paths: chosen.paths, destFile });
+    if (!combined.ok) return { ok: false, error: combined.error, detail: combined.detail };
+    return {
+      ok: true,
+      oasFile: combined.oasFile,
+      summary: `combined ${chosen.paths.length} specs`,
+      combinedPaths: chosen.paths,
+      operations: combined.operations,
+      renamed: combined.renamed,
+    };
+  }
+
   // Copy the chosen spec next to the destination so it ships with the code,
   // then validate the copy (never mutating the user's original).
+  // A split spec is copied bundled: its fragments stay behind, so its relative refs would dangle.
+  const upload = readSpecForUpload(chosen.absPath, chosen.path);
+  if (!upload.ok) return { ok: false, error: upload.error, detail: upload.detail };
   if (!fs.existsSync(apiDir)) safeMkdirSync(apiDir, { recursive: true });
-  const ext = path.extname(chosen.absPath).toLowerCase() === '.json' ? '.json' : '.yaml';
+  const ext = upload.bundled || path.extname(chosen.absPath).toLowerCase() === '.json' ? '.json' : '.yaml';
   const dest = path.join(apiDir, `openapi${ext}`);
   try {
-    fs.copyFileSync(chosen.absPath, dest);
+    if (upload.bundled) safeWriteFileSync(dest, `${JSON.stringify(JSON.parse(upload.raw), null, 2)}\n`);
+    else fs.copyFileSync(chosen.absPath, dest);
   } catch (err) {
     return { ok: false, error: `Couldn't read ${chosen.path}: ${err.message}` };
   }
@@ -906,16 +927,44 @@ export async function locateOasWithAi({
 
 /** The candidate picker `init` hands to `locateOasWithAi`. Kept next to the
  *  call so the engine itself stays promptless. */
-export function pickOasCandidate(candidates) {
+export async function pickOasCandidate(candidates) {
   const labels = candidates.map((c) => {
     const title = c.title && c.title !== c.path ? c.title : null;
     return title ? `${bold(title)}\n${dim(c.path)}` : bold(c.path);
   });
+  // Last, never the default: one spec per API is still the normal case.
+  labels.push({
+    label: `Combine all ${candidates.length} into one spec`,
+    hint: 'For one API split across files. Your files are left alone.',
+  });
+  for (;;) {
+    console.log('');
+    const idx = await singleSelect(labels, {
+      message: `Found ${candidates.length} specs that match. Which API do you want to import to Restless?`,
+      defaultIndex: 0,
+    });
+    if (idx < candidates.length) return candidates[idx];
+    const paths = await chooseSpecsToCombine(candidates.map((c) => c.path));
+    if (paths) return { combine: true, paths };
+  }
+}
+
+/** Every spec starts ticked; returns null when fewer than two are left to combine. */
+export async function chooseSpecsToCombine(paths) {
   console.log('');
-  return singleSelect(labels, {
-    message: `Found ${candidates.length} specs that match. Which API do you want to import to Restless?`,
-    defaultIndex: 0,
-  }).then((idx) => candidates[idx]);
+  const picked = await multiSelect(paths, { message: 'Which specs make up this API?' });
+  if (picked.length >= 2) return picked.map((i) => paths[i]);
+  console.log('');
+  console.log(`  ${yellow('•')} Pick at least two specs to combine.`);
+  return null;
+}
+
+/** The lines that report a finished combine, shared by init's two routes to it. */
+function describeCombined(res) {
+  return [
+    `  ${green('✓')} Combined ${bold(String(res.paths.length))} specs into ${bold(res.oasFile)} ${dim(`(${res.operations} endpoints)`)}.`,
+    ...describeRenames(res.renamed).map((line) => `  ${dim(line)}`),
+  ];
 }
 
 /**
@@ -1031,17 +1080,22 @@ async function adoptExistingOas({ rootDir, packageDir, update, setSpinner, known
           onAmbiguous: pickOasCandidate,
         });
         console.log('');
-        if (located.ok) {
+        if (located.ok && located.combinedPaths) {
+          for (const line of describeCombined({ ...located, paths: located.combinedPaths })) console.log(line);
+        } else if (located.ok) {
           console.log(located.chosenPath
             ? `  ${green('✓')} Using ${bold(located.chosenPath)}, copied to ${bold(located.oasFile)}.`
             : `  ${green('✓')} Spec ready at ${bold(located.oasFile)}.`);
         } else {
           console.log(`  ${yellow('•')} ${located.error}`);
+          if (located.detail) for (const line of located.detail.split('\n')) console.log(`  ${dim(line)}`);
         }
         finalOasFile = located.ok ? located.oasFile : null;
         // Record what was actually done to find the spec, not the freeform
         // instruction the user typed.
-        oasSource = { kind: 'describe', summary: located.summary };
+        oasSource = located.combinedPaths
+          ? oasSourceForPick('combined', { paths: located.combinedPaths })
+          : { kind: 'describe', summary: located.summary };
       }
     }
 
@@ -1565,7 +1619,13 @@ export default async function generateOas({ packageDir, rootDir, update, setSpin
   // re-scan the routes). Every branch below has to set it.
   let oasSource = null;
 
-  {
+  // Offered only when there are several, and led by the spec the scan judged
+  // primary, since the first input supplies the combined spec's `info`.
+  const combinable = combinableSpecs({ rootDir, apiRootDir: selectedApi.rootDir || '.' })
+    .sort((a, b) => (b === selectedApi.existingOasFile) - (a === selectedApi.existingOasFile));
+  let combineLines = null;
+
+  for (;;) {
     const options = [];
     const kinds = [];
     if (hasExistingOas) {
@@ -1592,15 +1652,47 @@ export default async function generateOas({ packageDir, rootDir, update, setSpin
       hint: 'Point us at a file, a URL, or describe where it is.',
     });
     kinds.push('adopt');
+    if (combinable.length > 1) {
+      options.push({
+        label: `Combine your ${combinable.length} specs into one`,
+        hint: summarizeSpecList(combinable),
+      });
+      kinds.push('combine');
+    }
 
     const picked = kinds[await singleSelect(options, {
       // Plain text - the picker bolds the whole message itself.
       message: `Where should the spec for ${selectedApi.name} come from?`,
       defaultIndex: 0,
     })];
-    debug.log('generate-oas.spec-source', { picked, hasExistingOas, canGenerateNatively });
+    debug.log('generate-oas.spec-source', {
+      picked, hasExistingOas, canGenerateNatively, combinable: combinable.length,
+    });
 
-    if (picked === 'found') {
+    if (picked === 'combine') {
+      const paths = await chooseSpecsToCombine(combinable);
+      if (!paths) continue;
+      setSpinner({ phase: 'Combining specs', detail: summarizeSpecList(paths) });
+      const res = await combineSpecFiles({ rootDir, paths, destFile: MANAGED_OAS_FILE });
+      setSpinner('');
+      if (!res.ok) {
+        console.log('');
+        console.log(`  ${red('✗')} ${res.error}`);
+        if (res.detail) for (const line of res.detail.split('\n')) console.log(`  ${dim(line)}`);
+        continue;
+      }
+      finalOasFile = res.oasFile;
+      skipReason = `combined ${paths.length} specs`;
+      combineLines = describeCombined(res);
+      oasSource = oasSourceForPick('combined', { paths });
+    } else if (picked === 'found') {
+      const refs = readSpecForUpload(existingOasPath, selectedApi.existingOasFile);
+      if (!refs.ok) {
+        console.log('');
+        console.log(`  ${red('✗')} ${refs.error}`);
+        if (refs.detail) console.log(`  ${dim(refs.detail)}`);
+        continue;
+      }
       // Point settings at their file - don't overwrite their work.
       finalOasFile = selectedApi.existingOasFile;
       skipReason = `using ${bold(selectedApi.existingOasFile)}`;
@@ -1632,10 +1724,11 @@ export default async function generateOas({ packageDir, rootDir, update, setSpin
         framework: selectedApi.framework,
       });
     }
+    break;
   }
 
   if (skipReason) {
-    update({ sub: { 0: 'done' }, activeSub: 1, message: [
+    update({ sub: { 0: 'done' }, activeSub: 1, message: combineLines || [
       `  ${green('✓')} Skipped OAS generation ${dim(skipReason)}.`,
     ]});
   } else {

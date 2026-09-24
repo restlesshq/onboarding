@@ -46,8 +46,8 @@
             "properties": {
               "kind": {
                 "type": "string",
-                "description": "ai: our model read the routes. native: the framework's own generator. found: already in the repo, we never write it. file: you pointed us at a path. url: fetched from a URL. describe: located from a plain-English description. agent: written by a coding agent via `npx restless register`.",
-                "enum": ["ai", "native", "found", "file", "url", "describe", "agent"]
+                "description": "ai: our model read the routes. native: the framework's own generator. found: already in the repo, we never write it. file: you pointed us at a path. url: fetched from a URL. describe: located from a plain-English description. combined: several specs you maintain, combined into .restless/openapi.json. agent: written by a coding agent via `npx restless register`.",
+                "enum": ["ai", "native", "found", "file", "url", "describe", "combined", "agent"]
               },
               "framework": {
                 "type": ["string", "null"],
@@ -68,6 +68,11 @@
               "summary": {
                 "type": "string",
                 "description": "kind=describe: what was actually done to find the spec, not the instruction you typed"
+              },
+              "paths": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "kind=combined: the specs that were combined, in order. We only ever read these."
               }
             },
             "required": ["kind"],
