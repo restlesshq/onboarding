@@ -511,3 +511,76 @@ describe('uploadPendingArtifacts', () => {
     expect(res.endpoints).toBe(2);
   });
 });
+
+describe('stageForClaim', () => {
+  const OAS = JSON.stringify({ openapi: '3.0.3', paths: { '/pets': { get: {} } } });
+
+  function writeProject() {
+    fs.mkdirSync(path.join(tmp, '.restless'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.restless', 'openapi.json'), OAS);
+    saveSettings(tmp, { version: 1, apis: [
+      { id: 'a', name: 'Pets', rootDir: '.', oasFile: '.restless/openapi.json', projectId: 'p-1' },
+    ]});
+  }
+
+  const rejected = { ok: false, status: 401, text: async () => 'Unauthorized' };
+  const ok = { ok: true };
+
+  it('leaves a live key alone', async () => {
+    writeProject();
+    const fetchImpl = vi.fn().mockResolvedValue(ok);
+    const res = await mod.stageForClaim({ rootDir: tmp, projectId: 'p-1', setupKey: 's-1', writeKeyHash: 'h', fetchImpl });
+    expect(res).toMatchObject({ setupKey: 's-1', artifacts: { oas: 'uploaded' } });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  // The setup that sat overnight: the stored key had expired, the 401 read as "already
+  // claimed", and the CLI handed out a claim link that could only ever fail.
+  it('renews an expired key, saves it, and stages under the new one', async () => {
+    writeProject();
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(rejected)
+      .mockResolvedValueOnce(rejected)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ project_id: 'p-1', setup_key: 's-2' }) })
+      .mockResolvedValue(ok);
+    const res = await mod.stageForClaim({ rootDir: tmp, projectId: 'p-1', setupKey: 's-1', writeKeyHash: 'h', fetchImpl });
+
+    expect(res.setupKey).toBe('s-2');
+    expect(res.artifacts.oas).toBe('uploaded');
+    const [initUrl, initReq] = fetchImpl.mock.calls[2];
+    expect(initUrl).toContain('/api/projects/init');
+    expect(JSON.parse(initReq.body)).toEqual({ write_key_hash: 'h' });
+    expect(JSON.parse(fetchImpl.mock.calls[3][1].body).setup_key).toBe('s-2');
+    expect(mod.loadProjectCreds('p-1').setupKey).toBe('s-2');
+  });
+
+  it('reports claimed when the server says the key belongs to a claimed project', async () => {
+    writeProject();
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(rejected)
+      .mockResolvedValueOnce(rejected)
+      .mockResolvedValueOnce({ ok: false, status: 409, text: async () => 'key_claimed' });
+    const res = await mod.stageForClaim({ rootDir: tmp, projectId: 'p-1', setupKey: 's-1', writeKeyHash: 'h', fetchImpl });
+    expect(res).toMatchObject({ setupKey: 's-1', artifacts: { oas: 'claimed' } });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('refuses a renewal that comes back for a different project', async () => {
+    writeProject();
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(rejected)
+      .mockResolvedValueOnce(rejected)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ project_id: 'p-9', setup_key: 's-2' }) });
+    await expect(
+      mod.stageForClaim({ rootDir: tmp, projectId: 'p-1', setupKey: 's-1', writeKeyHash: 'h', fetchImpl }),
+    ).rejects.toThrow('p-9');
+  });
+
+  it('keeps the old behavior when there is no write key to renew with', async () => {
+    writeProject();
+    const fetchImpl = vi.fn().mockResolvedValue(rejected);
+    const res = await mod.stageForClaim({ rootDir: tmp, projectId: 'p-1', setupKey: 's-1', writeKeyHash: null, fetchImpl });
+    expect(res.artifacts.oas).toBe('claimed');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+});

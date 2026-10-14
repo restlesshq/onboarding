@@ -34,7 +34,7 @@ import { detectStack, stackCheckDisabled, unsupportedStackMessage } from '../lib
 import { resolveOwningDir } from '../lib/install-target.js';
 import { apiDirKey, loadSettings, saveSettings, upsertApi, generatePrefix, formatRequestId, stripRequestIdPrefix } from '../lib/settings.js';
 import { findExistingEnvFile, existingRestlessKey, replaceRestlessKey } from '../steps/prepare-account.js';
-import { generateWriteKey, ensureProject, loadProjectCreds, pollForLandedLog, uploadPendingArtifacts } from '../lib/project-init.js';
+import { generateWriteKey, ensureProject, hashWriteKey, loadProjectCreds, pollForLandedLog, stageForClaim } from '../lib/project-init.js';
 import { normalizeBaseUrl, parseStatus, describeDiagnosis, diagnoseFromHeaders, splitCurlIncludeOutput, fixContext } from '../lib/test-diagnosis.js';
 import { checkOasServers, guessBaseUrl, isPlausibleBaseUrl } from '../lib/base-url.js';
 import { safeWriteFileSync, safeAppendFileSync } from '../lib/pathGuard.js';
@@ -1566,18 +1566,32 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // flow attaches whatever is pending at claim time - a login link handed
   // out without this upload claims an empty project (no endpoints, no
   // settings), which is exactly how the agent flow used to end.
-  const artifacts = await uploadPendingArtifacts({
-    rootDir: loginRoot, projectId: entry.projectId, setupKey: creds.setupKey,
-  });
+  // Legacy creds files kept the write key in plaintext rather than its hash.
+  const writeKeyHash = creds.apiKeyHash || (creds.apiKey ? hashWriteKey(creds.apiKey) : null);
+  let artifacts;
+  let setupKey;
+  try {
+    ({ artifacts, setupKey } = await stageForClaim({
+      rootDir: loginRoot, projectId: entry.projectId, setupKey: creds.setupKey, writeKeyHash,
+    }));
+  } catch (err) {
+    if (asJson) console.log(JSON.stringify({ ok: false, error: err.message }, null, 2));
+    else console.log(red(`\n  ✗ ${err.message}\n`));
+    await debug.flushAndExit(1);
+  }
 
   const token = crypto.randomBytes(16).toString('hex');
   try {
     const res = await fetch(`${SITE_URL}/api/auth/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token, projectId: entry.projectId, setupKey: creds.setupKey }),
+      body: JSON.stringify({ token, projectId: entry.projectId, setupKey }),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      // The server explains a refusal (an expired or spent key) better than a bare status does.
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.message || `HTTP ${res.status}`);
+    }
   } catch (err) {
     const msg = `Couldn't prepare the login link (${err.message}).`;
     if (asJson) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
