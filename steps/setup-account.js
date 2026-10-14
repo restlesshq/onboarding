@@ -6,7 +6,7 @@ import { bold, dim, green, red, cyan, celebrationBanner, isAbortKey } from '../l
 import { loadSettings } from '../lib/settings.js';
 import { SITE_URL, CLI_NAME } from '../lib/config.js';
 import { isInteractive } from '../lib/env.js';
-import { uploadPendingArtifacts } from '../lib/project-init.js';
+import { hashWriteKey, stageForClaim } from '../lib/project-init.js';
 import * as debug from '../lib/debug.js';
 
 function openBrowser(url) {
@@ -99,7 +99,7 @@ export default async function setupAccount({
   // claim flow has nothing left to do but mark the project as theirs.
   // The OAS lands in `PendingOAS` keyed by setupKeyHash; the claim
   // route picks it up after auth completes. The uploads themselves are
-  // shared with `api login` (uploadPendingArtifacts): the whole
+  // shared with `api login` (stageForClaim): the whole
   // settings.json goes up alongside the spec, and a settings failure is
   // non-fatal - the project still claims, just without the blob.
   const settings = loadSettings(rootDir);
@@ -114,7 +114,17 @@ export default async function setupAccount({
   });
 
   setSpinner?.('Uploading OpenAPI spec');
-  const artifacts = await uploadPendingArtifacts({ rootDir, apiRootDir, projectId, setupKey });
+  let artifacts;
+  try {
+    ({ artifacts, setupKey } = await stageForClaim({
+      rootDir, apiRootDir, projectId, setupKey,
+      writeKeyHash: apiKey ? hashWriteKey(apiKey) : null,
+    }));
+  } catch (err) {
+    setSpinner?.('');
+    update({ status: 'failed', message: [`  ${red('✗')} ${err.message}`] });
+    return { apiKey };
+  }
   setSpinner?.('');
 
   if (artifacts.oas === 'failed') {
