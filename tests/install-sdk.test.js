@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { nextWiringStatus } from '../steps/install-sdk.js';
+import { nextWiringStatus, describeAiActivity } from '../steps/install-sdk.js';
 import { detectNext, nextPluginWiringStatus } from '../lib/next-detect.js';
 import { setGitRoot } from '../lib/pathGuard.js';
 
@@ -150,5 +150,37 @@ export async function proxy(req) { return sdk.setup(() => ({}))(req); }`);
     // Plugin status alone says ok - which is exactly why the composed gate
     // in installSdk must ALSO require zero middleware wirings.
     expect(nextPluginWiringStatus(dir).ok).toBe(true);
+  });
+});
+
+describe('describeAiActivity (what the failure message claims)', () => {
+  const dir = '/home/u/wt/app';
+
+  it('says nothing was modified only when nothing was', () => {
+    expect(describeAiActivity({}, dir, 'Claude Code')).toEqual([
+      'Claude Code read your project but never modified a source file.',
+    ]);
+  });
+
+  it('names the files it edited, relative to the project', () => {
+    const [line] = describeAiActivity({ edited: [`${dir}/cmd/main.go`] }, dir, 'Claude Code');
+    expect(line).toBe("Claude Code edited cmd/main.go, but the SDK still isn't wired in.");
+  });
+
+  it('names refused writes outside the project by their absolute path', () => {
+    const lines = describeAiActivity(
+      { edited: [], denied: ['/workspace/app/cmd/main.go', '/workspace/app/go.mod'] },
+      dir,
+      'Claude Code',
+    );
+    expect(lines).toEqual([
+      'Claude Code tried to change files outside this project (/workspace/app/cmd/main.go, /workspace/app/go.mod), and the CLI refused.',
+    ]);
+  });
+
+  it('caps a long list', () => {
+    const edited = ['a', 'b', 'c', 'd', 'e'].map((f) => `${dir}/${f}.go`);
+    const [line] = describeAiActivity({ edited }, dir, 'Codex');
+    expect(line).toContain('a.go, b.go, c.go and 2 more');
   });
 });

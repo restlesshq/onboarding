@@ -1,6 +1,8 @@
+import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as debug from '../lib/debug.js';
-import { isInsideRoot, getGitRoot } from '../lib/pathGuard.js';
+import { getGitRoot, listCheckouts } from '../lib/pathGuard.js';
+import { makeToolGuard } from '../lib/tool-guard.js';
 import { createToolProgressTracker } from '../lib/stream-progress.js';
 
 // AI tool inputs (especially Write/Edit) carry full file contents that
@@ -94,65 +96,6 @@ function describeToolUse(toolName, input) {
   }
 }
 
-/**
- * Pull every absolute path token out of a Bash command. Best-effort:
- * matches `/`-prefixed POSIX paths separated by whitespace, quotes, or
- * shell metacharacters. We use this to refuse Bash invocations that
- * touch a path outside the git root - it isn't perfect (a clever AI
- * could obfuscate via env-var indirection or `eval`) but it stops the
- * common cases (cd, cat, mv with absolute paths above the root).
- */
-function extractAbsPaths(cmd) {
-  if (typeof cmd !== 'string') return [];
-  const out = [];
-  const re = /(?<![\w\\])(\/[^\s"';|&<>()`$]+)/g;
-  let m;
-  while ((m = re.exec(cmd)) !== null) out.push(m[1]);
-  return out;
-}
-
-/**
- * `canUseTool` callback for the Claude Agent SDK. Hard-rejects any
- * Write / Edit / NotebookEdit whose target path is outside the git
- * root, plus any Bash command that mentions an absolute path outside
- * the git root. Defense in depth alongside the safe fs helpers - if
- * the AI dreams up a path we'd write somewhere bad, this layer kills
- * the call before it reaches disk.
- */
-function makeCanUseTool(gitRoot) {
-  return async (toolName, input) => {
-    if (!gitRoot) return { behavior: 'allow' };
-
-    if (toolName === 'Write' || toolName === 'Edit' || toolName === 'NotebookEdit') {
-      const fp = input?.file_path || input?.notebook_path;
-      if (typeof fp === 'string' && fp && !isInsideRoot(fp, gitRoot)) {
-        debug.log('ai.tool.denied', { tool: toolName, path: fp, reason: 'outside-git-root' });
-        return {
-          behavior: 'deny',
-          message:
-            `${toolName} ${fp} is outside the git root ${gitRoot}. ` +
-            `The CLI never lets writes escape the repository it was invoked from. ` +
-            `Use a path inside ${gitRoot} instead.`,
-        };
-      }
-    }
-    if (toolName === 'Bash') {
-      for (const p of extractAbsPaths(input?.command)) {
-        if (!isInsideRoot(p, gitRoot)) {
-          debug.log('ai.tool.denied', { tool: 'Bash', path: p, reason: 'outside-git-root' });
-          return {
-            behavior: 'deny',
-            message:
-              `Bash command references ${p}, which is outside the git root ${gitRoot}. ` +
-              `Refusing to run; nothing the CLI does is allowed to escape the repo.`,
-          };
-        }
-      }
-    }
-    return { behavior: 'allow' };
-  };
-}
-
 export default {
   name: 'claude',
 
@@ -171,8 +114,10 @@ export default {
    * from the outside, and a caller that reports the second as the first is
    * lying to the user. Callers that cannot otherwise tell those apart pass
    * this and check.
+   *
+   * `onReport` receives `{ edited, denied }` (absolute paths) when the run ends.
    */
-  async run(prompt, cwd, { onStatus, maxTurns = 30, onError } = {}) {
+  async run(prompt, cwd, { onStatus, maxTurns = 30, onError, onReport } = {}) {
     let result = '';
     // Counts so the debug log answers "did the AI actually write?" in a
     // single line. Useful post-mortem when install-sdk later finds nothing
@@ -180,6 +125,24 @@ export default {
     // produced commentary.
     const toolCounts = { Read: 0, Glob: 0, Grep: 0, Bash: 0, Edit: 0, Write: 0, other: 0 };
     const gitRoot = getGitRoot();
+    const guard = makeToolGuard({ gitRoot, cwd, checkouts: listCheckouts(gitRoot) });
+    const editPaths = new Map(); // tool_use id -> absolute path
+    const deniedIds = new Set(); // refused by the guard, or failed
+    const denied = [];
+    const preToolUse = async (input) => {
+      const verdict = guard(input.tool_name, input.tool_input);
+      if (!verdict) return {};
+      deniedIds.add(input.tool_use_id);
+      denied.push(verdict.path);
+      debug.log('ai.tool.denied', { tool: input.tool_name, path: verdict.path, reason: verdict.owner ? 'other-checkout' : 'outside-project' });
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: verdict.message,
+        },
+      };
+    };
     debug.log('ai.run.start', {
       provider: 'claude',
       cwd,
@@ -212,7 +175,16 @@ export default {
           maxTurns,
           allowedTools: ['Read', 'Edit', 'Glob', 'Grep', 'Bash', 'Write'],
           cwd,
-          canUseTool: makeCanUseTool(gitRoot),
+          // A hook, not `canUseTool`: allowedTools auto-approve and never reach
+          // canUseTool, so a guard there never ran for Edit/Write/Bash.
+          hooks: { PreToolUse: [{ hooks: [preToolUse] }] },
+          // Keep user settings (auth, env) but not the user's CLAUDE.md or memory,
+          // which name other checkouts' paths when this one is a git worktree.
+          settingSources: ['user'],
+          settings: {
+            autoMemoryEnabled: false,
+            claudeMdExcludes: ['**/CLAUDE.md', '**/CLAUDE.local.md', '**/AGENTS.md', '**/.claude/rules/**'],
+          },
           // Streaming events are what let the spinner track the model while
           // it is generating a tool call. A tool_use block only reaches the
           // `assistant` branch below once its ENTIRE input has been
@@ -245,6 +217,15 @@ export default {
           continue;
         }
 
+        // A tool_result that errored (an Edit whose old_string didn't match)
+        // changed nothing, so it must not count as an edit.
+        if (message.type === 'user' && Array.isArray(message.message?.content)) {
+          for (const block of message.message.content) {
+            if (block?.type === 'tool_result' && block.is_error) deniedIds.add(block.tool_use_id);
+          }
+          continue;
+        }
+
         if (message.type === 'assistant') {
           for (const block of message.message.content) {
             if (block.type === 'text') {
@@ -254,6 +235,10 @@ export default {
             } else if (block.type === 'tool_use') {
               onStatus?.(describeToolUse(block.name, block.input));
               debug.log('ai.tool_use', { tool: block.name, input: truncatedToolInput(block.input) });
+              const file = block.input?.file_path || block.input?.notebook_path;
+              if (['Edit', 'Write', 'NotebookEdit'].includes(block.name) && typeof file === 'string') {
+                editPaths.set(block.id, path.resolve(cwd || '.', file));
+              }
               if (block.name in toolCounts) toolCounts[block.name]++;
               else toolCounts.other++;
             }
@@ -291,6 +276,8 @@ export default {
       // Present only when the run ended on an SDK error (max turns, etc.).
       error: runError || undefined,
     });
+    const edited = [...new Set([...editPaths].filter(([id]) => !deniedIds.has(id)).map(([, p]) => p))];
+    onReport?.({ edited, denied: [...new Set(denied)] });
     return result;
   },
 };

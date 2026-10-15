@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { runAI, setProvider } from '../lib/ai.js';
+import { runAI, setProvider, locationPreamble } from '../lib/ai.js';
+import { setGitRoot } from '../lib/pathGuard.js';
 
 // Stub provider that captures whatever runAI hands it. Lets us assert on
 // the exact prompt the wrapper sends downstream without spinning up a
@@ -99,5 +100,39 @@ describe('runAI passthrough of maxTurns and onError', () => {
     await runAI('p', '/tmp', { onError: (e) => seen.push(e) });
     stub.calls[0].opts.onError('Reached maximum number of turns (30)');
     expect(seen).toEqual(['Reached maximum number of turns (30)']);
+  });
+});
+
+describe('runAI project-location preamble', () => {
+  let stub;
+  beforeEach(() => {
+    stub = makeStubProvider();
+    setProvider(stub);
+  });
+  afterEach(() => {
+    setGitRoot(null);
+    setProvider('claude');
+  });
+
+  it('names the absolute project directory and disowns other checkouts', async () => {
+    setGitRoot('/home/u/worktrees/app');
+    await runAI('Wire the SDK.', '/home/u/worktrees/app');
+    const sent = stub.calls[0].prompt;
+    expect(sent).toContain('## Project location');
+    expect(sent).toContain('`/home/u/worktrees/app`');
+    expect(sent).toMatch(/different checkout/);
+    expect(sent.indexOf('## Project location')).toBeLessThan(sent.indexOf('Wire the SDK.'));
+  });
+
+  it('names the repository root separately when the run is in a subdirectory', () => {
+    const text = locationPreamble('/repo/services/api', '/repo');
+    expect(text).toContain('`/repo/services/api`');
+    expect(text).toContain('The repository root is `/repo`');
+  });
+
+  it('passes onReport through to the provider', async () => {
+    const onReport = () => {};
+    await runAI('p', '/tmp', { onReport });
+    expect(stub.calls[0].opts.onReport).toBe(onReport);
   });
 });

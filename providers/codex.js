@@ -1,3 +1,4 @@
+import path from 'path';
 import { spawn } from 'child_process';
 import * as debug from '../lib/debug.js';
 
@@ -51,7 +52,8 @@ function describePatch(paths) {
 export default {
   name: 'codex',
 
-  async run(prompt, cwd, { onStatus } = {}) {
+  async run(prompt, cwd, { onStatus, onReport } = {}) {
+    const edited = new Set();
     // Mirrors the claude.js mutation counter so debug logs from either
     // provider answer "did the AI actually write?" the same way. Codex
     // reports each edited file as a `file_change` item; we count files
@@ -155,6 +157,8 @@ export default {
           mutations,
           execs,
         });
+        // Codex's sandbox confines writes to cwd, so nothing is ever refused here.
+        onReport?.({ edited: [...edited], denied: [] });
         if (code !== 0) {
           const stderrTail = stderrBuffer.split('\n').slice(-8).join('\n').trim();
           // Auth is the most common first-run failure. Surface a concrete next
@@ -209,6 +213,7 @@ export default {
               countedActions.add(key);
               const paths = Array.isArray(item.changes) ? item.changes.map((c) => c.path) : [];
               mutations += paths.length;
+              for (const p of paths) edited.add(path.resolve(cwd || '.', p));
               onStatus?.(describePatch(paths));
               debug.log('ai.tool_use', { tool: 'Patch', input: { paths } });
             }
@@ -281,6 +286,7 @@ export default {
           case 'patch_apply_begin': {
             const paths = Object.keys(data.changes || {});
             mutations += paths.length;
+            for (const p of paths) edited.add(path.resolve(cwd || '.', p));
             onStatus?.(describePatch(paths));
             debug.log('ai.tool_use', { tool: 'Patch', input: { paths } });
             break;
