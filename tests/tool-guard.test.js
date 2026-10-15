@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
-import { makeToolGuard, extractAbsPaths } from '../lib/tool-guard.js';
+import { makeToolGuard, extractAbsPaths, dependencyDirs } from '../lib/tool-guard.js';
 import { listCheckouts, owningCheckout } from '../lib/pathGuard.js';
 
 // A main checkout, a sibling worktree (the reported setup: init run in the
@@ -79,6 +79,107 @@ describe('makeToolGuard from a worktree', () => {
     expect(g('Bash', { command: 'go get github.com/restlesshq/go' })).toBeNull();
     expect(g('Bash', { command: `node -e "s.replace(/foo/g, '')"` })).toBeNull();
     expect(g('Bash', { command: `ls ${sibling}/cmd` })).toBeNull();
+  });
+});
+
+describe('dependencyDirs', () => {
+  // A project dir holding just the given manifests.
+  const project = (...manifests) => {
+    const dir = fs.mkdtempSync(path.join(base, 'proj-'));
+    for (const m of manifests) fs.writeFileSync(path.join(dir, m), '');
+    return dir;
+  };
+  const fakeRun = (outputs) => {
+    const calls = [];
+    const run = (cmd, args, cwd) => {
+      calls.push({ cmd, cwd });
+      if (!(cmd in outputs)) throw new Error(`${cmd}: not found`);
+      return outputs[cmd];
+    };
+    return { run, calls };
+  };
+
+  it('asks only the toolchains whose manifest the project has, from the project', () => {
+    const dir = project('go.mod');
+    const { run, calls } = fakeRun({ go: '/gocache/mod\n/usr/local/go\n' });
+    expect(dependencyDirs([dir], run)).toEqual(['/gocache/mod', '/usr/local/go']);
+    expect(calls).toEqual([{ cmd: 'go', cwd: dir }]);
+  });
+
+  it('covers Python, Poetry, Pipenv, Ruby and npm', () => {
+    const dir = project('pyproject.toml', 'poetry.lock', 'Pipfile.lock', 'Gemfile', 'package.json');
+    const { run, calls } = fakeRun({
+      python3: '/py/lib/python3.12\n/py/lib/python3.12/site-packages\n',
+      poetry: '/cache/pypoetry/virtualenvs/app-x1\n',
+      pipenv: '/venvs/app-y2\n',
+      ruby: '/gems/3.3.0\n/ruby/lib/ruby/3.3.0\n',
+      npm: '/node/lib/node_modules\n',
+    });
+    expect(new Set(dependencyDirs([dir], run))).toEqual(new Set([
+      '/py/lib/python3.12', '/py/lib/python3.12/site-packages', '/cache/pypoetry/virtualenvs/app-x1',
+      '/venvs/app-y2', '/gems/3.3.0', '/ruby/lib/ruby/3.3.0', '/node/lib/node_modules',
+    ]));
+    expect(calls.map((c) => c.cmd)).toEqual(['python3', 'poetry', 'pipenv', 'ruby', 'npm']);
+  });
+
+  it('finds a manifest in the run directory or the repository root', () => {
+    const root = project('Gemfile');
+    const sub = project();
+    const { run, calls } = fakeRun({ ruby: '/gems\n' });
+    expect(dependencyDirs([sub, root], run)).toEqual(['/gems']);
+    expect(calls).toEqual([{ cmd: 'ruby', cwd: root }]);
+  });
+
+  it('skips a missing toolchain, and never exempts / or the home directory', () => {
+    const dir = project('go.mod', 'package.json');
+    const { run } = fakeRun({ go: `/\n${os.homedir()}\nrelative/dir\nwarning: something\n/ok\n` });
+    expect(dependencyDirs([dir], run)).toEqual(['/ok']);
+  });
+
+  it('asks each toolchain once per project', () => {
+    const dir = project('go.mod');
+    const { run, calls } = fakeRun({ go: '/gocache\n' });
+    dependencyDirs([dir], run);
+    dependencyDirs([dir], run);
+    expect(calls).toHaveLength(1);
+  });
+});
+
+// Against the real toolchains on this machine, for whichever are installed.
+describe('makeToolGuard and installed toolchains', () => {
+  const has = (cmd) => {
+    try {
+      execFileSync('which', [cmd], { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const cases = [
+    ['go', 'go.mod'],
+    ['python3', 'requirements.txt'],
+    ['ruby', 'Gemfile'],
+    ['npm', 'package.json'],
+  ];
+
+  for (const [cmd, manifest] of cases) {
+    it.skipIf(!has(cmd))(`lets Bash read ${cmd}'s dependency dirs from a project with ${manifest}`, () => {
+      const dir = fs.mkdtempSync(path.join(base, `${cmd}-`));
+      fs.writeFileSync(path.join(dir, manifest), '');
+      const dirs = dependencyDirs([dir]);
+      expect(dirs.length).toBeGreaterThan(0);
+      const guard = makeToolGuard({ gitRoot: dir });
+      for (const d of dirs) {
+        expect(guard('Bash', { command: `ls ${d}` })).toBeNull();
+        expect(guard('Bash', { command: `cat ${path.join(d, 'x', 'README.md')}` })).toBeNull();
+      }
+      expect(guard('Bash', { command: `echo x >> ${path.join(base, 'elsewhere.txt')}` })).not.toBeNull();
+    });
+  }
+
+  it('still refuses Bash naming other real paths outside the project', () => {
+    const guard = makeToolGuard({ gitRoot: sibling, checkouts: listCheckouts(sibling) });
+    expect(guard('Bash', { command: `echo x >> ${path.join(base, 'elsewhere.go')}` })).not.toBeNull();
   });
 });
 
