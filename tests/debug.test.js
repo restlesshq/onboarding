@@ -216,6 +216,27 @@ describe('abortExit', () => {
     expect(debug.wasInterrupted()).toBe(true);
     expect(exit).toHaveBeenCalledWith(130);
   });
+
+  it('makes any other exit mid-offer wait for the answer instead of cutting the prompt off', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => {});
+    let answer;
+    debug.setReportOffer(() => {
+      // A second failure from work still in flight, mid-prompt.
+      setTimeout(() => debug.flushAndExit(1), 0);
+      return new Promise((r) => { answer = r; });
+    });
+    debug.log('error', { headline: 'boom' });
+    const done = debug.finalize({ exitCode: 1 });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exit).not.toHaveBeenCalled();
+
+    answer();
+    await done;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
 });
 
 describe('submitLocalLog', () => {
@@ -229,6 +250,18 @@ describe('submitLocalLog', () => {
     expect(res.ok).toBe(true);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls[0][1].body).toBe(contents);
+  });
+
+  it('sends a report envelope beside the log, leaving the log itself untouched', async () => {
+    const debug = await freshDebug();
+    const file = path.join(tmpDir, '2026-01-01T00-00-00-000Z-init.json');
+    fs.writeFileSync(file, '{"meta":{"cli":"api"},"entries":[{"type":"x"}]}');
+
+    await debug.submitLocalLog(file, { report: { email: 'dev@example.com', source: 'prompt' } });
+    const sent = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(sent.report).toEqual({ email: 'dev@example.com', source: 'prompt' });
+    expect(sent.meta).toEqual({ cli: 'api' });
+    expect(sent.entries).toEqual([{ type: 'x' }]);
   });
 
   it('returns not-ok and does not POST when the file is missing', async () => {
@@ -247,5 +280,101 @@ describe('submitLocalLog', () => {
     const res = await debug.submitLocalLog(file);
     expect(res.ok).toBe(false);
     expect(res.status).toBe(500);
+  });
+});
+
+describe('setReportOffer', () => {
+  it('offers the local log after a run that reported an error and exited non-zero', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    const offer = vi.fn(async () => {});
+    debug.setReportOffer(offer);
+    debug.log('error', { headline: 'boom' });
+    await debug.finalize({ exitCode: 1 });
+
+    expect(offer).toHaveBeenCalledTimes(1);
+    const { localPath } = offer.mock.calls[0][0];
+    expect(path.dirname(localPath)).toBe(tmpDir);
+    expect(fs.existsSync(localPath)).toBe(true);
+    // The offer owns the upload; finalize sends nothing on its own.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not offer for a non-zero exit with no reported error (a usage mistake)', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'debug'] });
+    const offer = vi.fn();
+    debug.setReportOffer(offer);
+    await debug.finalize({ exitCode: 1 });
+    expect(offer).not.toHaveBeenCalled();
+  });
+
+  it('does not offer after an error the run recovered from', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    const offer = vi.fn();
+    debug.setReportOffer(offer);
+    debug.log('error', { headline: 'retrying' });
+    await debug.finalize({ exitCode: 0 });
+    expect(offer).not.toHaveBeenCalled();
+  });
+
+  it('does not offer when --debug is already uploading the log', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init', '--debug'] });
+    const offer = vi.fn();
+    debug.setReportOffer(offer);
+    debug.log('error', { headline: 'boom' });
+    await debug.finalize({ exitCode: 1 });
+    expect(offer).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not offer after a ctrl-c', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    vi.spyOn(process, 'exit').mockImplementation(() => {});
+    const offer = vi.fn();
+    debug.setReportOffer(offer);
+    debug.log('error', { headline: 'boom' });
+    await debug.abortExit(1);
+    expect(offer).not.toHaveBeenCalled();
+  });
+
+  it('lets an abort during the offer exit at once instead of waiting on the finalize it is part of', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => {});
+    debug.setReportOffer(() => {
+      // What ctrl-c at the prompt does: abort a moment later, and never answer.
+      setTimeout(() => debug.abortExit(130), 0);
+      return new Promise(() => {});
+    });
+    debug.log('error', { headline: 'boom' });
+    void debug.finalize({ exitCode: 1 });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(exit).toHaveBeenCalledWith(130);
+  });
+
+  it('makes any other exit mid-offer wait for the answer instead of cutting the prompt off', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => {});
+    let answer;
+    debug.setReportOffer(() => {
+      // A second failure from work still in flight, mid-prompt.
+      setTimeout(() => debug.flushAndExit(1), 0);
+      return new Promise((r) => { answer = r; });
+    });
+    debug.log('error', { headline: 'boom' });
+    const done = debug.finalize({ exitCode: 1 });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exit).not.toHaveBeenCalled();
+
+    answer();
+    await done;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(exit).toHaveBeenCalledWith(1);
   });
 });

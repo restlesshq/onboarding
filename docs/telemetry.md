@@ -80,13 +80,19 @@ Telemetry is not linked to your Restless account. There is no project ID in the
 payload and the endpoint is unauthenticated, so this data cannot be joined back
 to you even by us.
 
-## How this relates to `--debug`
+## How this relates to `--debug` and bug reports
 
 Different thing. `npx restless <command> --debug` uploads a full diagnostic log
 of one run, on purpose, when you are asking us for help with it. That log is
 detailed — it contains file paths and the contents of what the AI did — which is
 exactly why it is opt-in, one run at a time, and never sent unless you pass the
 flag.
+
+The bug report a failed run offers is that same log. The CLI lists what's in it
+and asks before sending anything, along with the email we should reply to
+(it suggests your `git config user.email`, and you confirm or change it). Under a
+coding agent, the CLI can't ask you itself, so it tells the agent to ask you and
+gives it the `npx restless submit-debug` command to run if you say yes.
 
 Telemetry is the opposite trade: always on, but only ever counts and categories.
 

@@ -43,6 +43,7 @@ import { findSdkReferences, findOwnerIdPlaceholders } from '../lib/grep-sdk.js';
 import contextStep from '../steps/context.js';
 import { signIn, pickProject, clearAccountToken, reportSignInFailure } from '../lib/context-auth.js';
 import * as debug from '../lib/debug.js';
+import * as bugReport from '../lib/bug-report.js';
 import * as timings from '../lib/timings.js';
 import * as telemetry from '../lib/telemetry.js';
 import { renderReport, renderJson, summarize } from '../lib/timings-report.js';
@@ -51,6 +52,8 @@ import { renderReport, renderJson, summarize } from '../lib/timings-report.js';
 // the stream wrappers need to be in place to record the welcome screen.
 const debugEnabled = debug.init({ argv: process.argv });
 debug.attachExitHandlers();
+// A run that fails offers to send its log to the team on the way out.
+bugReport.install();
 
 // ── Anonymous usage telemetry ─────────────────────────────────────────────
 // Opt-out and enum-only - see `lib/telemetry.js` for exactly what can leave
@@ -502,6 +505,7 @@ function printHelp() {
     ['context', 'Read this repo and teach the AI how your API is meant to be used'],
     ['debug <request-id>', 'Inspect a request, ask AI about it, or have it fixed for you'],
     ['update [projectId]', 'Refresh your spec, edit settings, and sync both to the dashboard'],
+    ['submit-debug [log]', 'Send a run\'s log to the Restless team as a bug report (--email <you>)'],
     ['telemetry', 'Show or change whether anonymous usage data is sent'],
     ['help', 'Show this help'],
     ['--version', 'Print the installed CLI version'],
@@ -2562,12 +2566,21 @@ if (command === '--version' || command === '-v' || command === 'version') {
   console.log('');
   await debug.flushAndExit(0);
 } else if (command === 'submit-debug') {
-  // Hidden command (intentionally absent from `printHelp`). Every run
-  // writes a local debug log to ~/.restless/debug/; this uploads the
-  // most recent one to the Restless team so support can ask for it
-  // after the fact instead of asking the user to reproduce with
-  // --debug. An explicit file path can be passed to send a specific log.
-  const explicitPath = process.argv[3];
+  // Every run writes a local debug log to ~/.restless/debug/; this uploads
+  // one to the Restless team as a bug report. It's the command a failed run
+  // hands an agent (which can't answer the inline prompt) and the one to
+  // run by hand later. Defaults to the most recent log; a path picks another.
+  //
+  // `--email` is the address the team replies to. An agent passes the one
+  // its user confirmed; at a terminal we ask, prefilled from git.
+  const explicitPath = positionalArg(process.argv, 3);
+  const emailFlag = flagValue(process.argv, '--email');
+  if (emailFlag && !bugReport.isValidEmail(emailFlag)) {
+    console.log('');
+    console.log(`  ${red(`"${emailFlag}" doesn't look like an email address.`)}`);
+    console.log('');
+    await debug.flushAndExit(1);
+  }
   const file = explicitPath || debug.findLatestLocalLog();
   if (!file) {
     console.log('');
@@ -2577,15 +2590,16 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(1);
   }
   console.log('');
-  console.log(`  ${dim(`Submitting ${file}`)}`);
-  const res = await debug.submitLocalLog(file);
-  console.log('');
-  if (res.ok) {
-    console.log(`  ${green('✓')} Debug log sent. Thanks - this helps us debug your setup.`);
+  let email = emailFlag || '';
+  if (!email && isInteractive()) {
+    for (const line of bugReport.describeReport(file, { whose: 'that run\'s' })) console.log(line);
+    console.log('');
+    email = await bugReport.askEmail();
   } else {
-    console.log(`  ${red('✗')} Couldn't send the debug log. Check your connection and try again.`);
+    console.log(`  ${dim(`Submitting ${file}`)}`);
   }
-  console.log('');
+  const res = await debug.submitLocalLog(file, { report: { email, source: 'submit-debug' } });
+  bugReport.reportOutcome(res, { email, localPath: file });
   await debug.flushAndExit(res.ok ? 0 : 1);
 } else {
   console.log('');

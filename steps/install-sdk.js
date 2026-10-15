@@ -762,8 +762,6 @@ export default async function installSdk({
           ...detail,
           ...(aiActivity.denied.size ? activityLines().slice(0, 1) : []),
           ...manualFix,
-          '',
-          `Run \`npx ${CLI_NAME} submit-debug\` to send us this run's log.`,
         ],
       );
       return { detectedLanguage, detectedFramework, guideLanguage, installed: true, wired: false };
@@ -774,8 +772,6 @@ export default async function installSdk({
         ...activityLines(),
         `Install the SDK by hand with the guide \`npx ${CLI_NAME} guide ${guideLanguage}\` prints,`,
         `then re-run \`npx ${CLI_NAME} init\`.`,
-        '',
-        `Run \`npx ${CLI_NAME} submit-debug\` to send us this run's log.`,
       ],
     );
     // Unreachable: fatalError throws FatalExit.
