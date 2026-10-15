@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { detectStack, unsupportedStackMessage, stackCheckDisabled } from '../lib/detect-stack.js';
+import { detectStack, noCodeMessage, unsupportedStackMessage, stackCheckDisabled } from '../lib/detect-stack.js';
 import { describeLanguage, describeLanguages, SUPPORTED_LANGUAGES } from '../lib/sdk-writers/index.js';
 
 function tmp() {
@@ -241,6 +241,16 @@ describe('unsupportedStackMessage', () => {
   });
 });
 
+describe('noCodeMessage', () => {
+  it('names the directory, tells the agent what to ask, and documents the escape hatch', () => {
+    const { headline, details } = noCodeMessage({ rootDir: 'C:\\Users\\x\\proj', cliName: 'api' });
+    expect(headline).toContain('C:\\Users\\x\\proj');
+    const body = details.join('\n');
+    expect(body).toContain('Ask the user where the API lives');
+    expect(body).toContain('RESTLESS_SKIP_STACK_CHECK=1 npx api init');
+  });
+});
+
 describe('stackCheckDisabled', () => {
   const original = process.env.RESTLESS_SKIP_STACK_CHECK;
   afterEach(() => {
@@ -297,5 +307,65 @@ describe('routing (setupLanguages)', () => {
     write(dir, 'package.json', pkg({ express: '^4' }));
     write(dir, 'server.js', "app.get('/x', h);\n");
     expect(detectStack(dir).setupLanguages).toEqual(['javascript']);
+  });
+
+  // Regression: a Cursor run on Windows in a folder with no code got the full
+  // agent playbook, because "javascript" is the default verdict and an empty
+  // folder lands on it the same as a Node repo.
+  describe('foundCode', () => {
+    it('is false for an empty directory, which is still supported', () => {
+      const stack = detectStack(dir);
+      expect(stack.supported).toBe(true);
+      expect(stack.setupLanguages).toEqual(['javascript']);
+      expect(stack.foundCode).toBe(false);
+    });
+
+    it('is false when the only files are not code', () => {
+      write(dir, 'README.md', '# hi\n');
+      write(dir, 'docs/spec.yaml', 'openapi: 3.1.0\n');
+      expect(detectStack(dir).foundCode).toBe(false);
+    });
+
+    it('ignores code inside skipped directories', () => {
+      write(dir, 'node_modules/express/index.js', 'module.exports = {};\n');
+      expect(detectStack(dir).foundCode).toBe(false);
+    });
+
+    it('is true for a bare package.json', () => {
+      write(dir, 'package.json', pkg());
+      expect(detectStack(dir).foundCode).toBe(true);
+    });
+
+    it('is true for JavaScript source with no manifest', () => {
+      write(dir, 'server.js', "require('http').createServer(h).listen(3000);\n");
+      expect(detectStack(dir).foundCode).toBe(true);
+    });
+
+    it('is true for Python source with no manifest', () => {
+      write(dir, 'main.py', 'print(1)\n');
+      expect(detectStack(dir).foundCode).toBe(true);
+    });
+
+    it('is true for an unsupported stack, which the caller reports separately', () => {
+      write(dir, 'Cargo.toml', '[package]\n');
+      const stack = detectStack(dir);
+      expect(stack.supported).toBe(false);
+      expect(stack.foundCode).toBe(true);
+    });
+  });
+
+  describe('extensions', () => {
+    it('lists the commonest extensions first, with extensionless files named', () => {
+      write(dir, 'a.md', '');
+      write(dir, 'b.md', '');
+      write(dir, 'c.yaml', '');
+      write(dir, 'LICENSE', '');
+      expect(detectStack(dir).extensions).toEqual({ '.md': 2, '(none)': 1, '.yaml': 1 });
+    });
+
+    it('caps the list so a large repo does not bloat the log', () => {
+      for (let i = 0; i < 12; i++) write(dir, `f.ext${i}`, '');
+      expect(Object.keys(detectStack(dir).extensions)).toHaveLength(8);
+    });
   });
 });
