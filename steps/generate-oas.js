@@ -1470,6 +1470,8 @@ export default async function generateOas({ packageDir, rootDir, update, setSpin
       languages: stack.languages,
       setupLanguages: stack.setupLanguages,
       nodeEvidence: stack.nodeEvidence,
+      foundCode: stack.foundCode,
+      extensions: stack.extensions,
     });
     if (!stack.supported) {
       const { headline, details } = unsupportedStackMessage(stack, {
