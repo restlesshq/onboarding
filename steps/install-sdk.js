@@ -5,7 +5,7 @@ import { runAI, loadPrompt, loadPromptForLanguage, pkgRoot } from '../lib/ai.js'
 import { bold, dim, green, red, cyan, yellow, orange, ask, terminalPrompt, waitForKey } from '../lib/ui.js';
 import { startStep } from '../lib/step-template.js';
 import { CLI_NAME } from '../lib/config.js';
-import { safeWriteFileSync } from '../lib/pathGuard.js';
+import { safeWriteFileSync, isInsideRoot } from '../lib/pathGuard.js';
 import { fatalError } from '../lib/errors.js';
 import * as debug from '../lib/debug.js';
 import * as timings from '../lib/timings.js';
@@ -112,6 +112,27 @@ export function nextWiringStatus(installDir, nextInfo, language = 'javascript') 
     wiredHandlerSide,
     ok: wiredMiddleware.length === 0 && wiredHandlerSide.length > 0,
   };
+}
+
+function listPaths(paths, installDir) {
+  const shown = paths.map((p) => (isInsideRoot(p, installDir) ? path.relative(installDir, p) || '.' : p));
+  return shown.length > 3 ? `${shown.slice(0, 3).join(', ')} and ${shown.length - 3} more` : shown.join(', ');
+}
+
+/**
+ * What the wiring AI actually did across its attempts, one sentence per fact.
+ * Every failed-wiring message is built from this rather than assumed.
+ */
+export function describeAiActivity({ edited = [], denied = [] }, installDir, aiTool) {
+  const lines = [];
+  if (denied.length) {
+    lines.push(`${aiTool} tried to change files outside this project (${listPaths(denied, installDir)}), and the CLI refused.`);
+  }
+  if (edited.length) {
+    lines.push(`${aiTool} edited ${listPaths(edited, installDir)}, but the SDK still isn't wired in.`);
+  }
+  if (!lines.length) lines.push(`${aiTool} read your project but never modified a source file.`);
+  return lines;
 }
 
 export default async function installSdk({
@@ -500,6 +521,14 @@ export default async function installSdk({
   // `attemptNum` 1 = first pass (base prompt). 2 = blind retry with a
   // "you didn't write — you MUST call Edit" coda. 3 = retry with a
   // user-supplied entry file path baked in.
+  const aiActivity = { edited: new Set(), denied: new Set() };
+  const recordAiReport = ({ edited = [], denied = [] } = {}) => {
+    for (const p of edited) aiActivity.edited.add(p);
+    for (const p of denied) aiActivity.denied.add(p);
+  };
+  const activityLines = () =>
+    describeAiActivity({ edited: [...aiActivity.edited], denied: [...aiActivity.denied] }, installDir, aiTool);
+
   async function runSetupAi(attemptNum, userHint = null) {
     let prompt = basePrompt + nextCoda;
     if (attemptNum > 1 && isNext) {
@@ -542,8 +571,14 @@ export default async function installSdk({
           `\`@restlessai/sdk/next\`. Producing text describing the change is not enough — apply it.`;
       }
     } else if (attemptNum > 1) {
+      const previous = aiActivity.denied.size
+        ? `Your previous attempt tried to edit files outside this project, which was refused. ` +
+          `The project is at \`${installDir}\`: make every change there. `
+        : aiActivity.edited.size
+          ? `Your previous attempt edited files but did not wire the SDK in. `
+          : `Your previous attempt produced commentary but did not modify any files. `;
       prompt += `\n\n## Retry context (READ THIS)\n\n` +
-        `Your previous attempt produced commentary but did not modify any files. ` +
+        previous +
         `Source files in this project still contain no \`@restlessai/sdk\` import. ` +
         `You MUST use the Edit (or Write) tool to add the SDK middleware to the user's ` +
         `server entry file. Producing text describing the change is not enough — apply it.`;
@@ -559,7 +594,11 @@ export default async function installSdk({
     }
     debug.log('install-sdk.ai-attempt', { attempt: attemptNum, hint: userHint || null });
     try {
-      await runAI(prompt, installDir, { setSpinner, label: `setup-sdk:attempt-${attemptNum}` });
+      await runAI(prompt, installDir, {
+        setSpinner,
+        label: `setup-sdk:attempt-${attemptNum}`,
+        onReport: recordAiReport,
+      });
     } catch (err) {
       // Don't bail on a per-attempt error — the retry loop is the recovery
       // path. The final `fatalError` below covers the case where every
@@ -640,8 +679,8 @@ export default async function installSdk({
         await runSetupAi(attempt);
       } else if (attempt === 2) {
         update({ activeSub: 2, message: [
-          `  ${yellow('⚠')} ${orange(aiTool)} finished without writing to any source file. Trying again.`,
-          dim('  Giving it an explicit instruction to use the Edit tool this time.'),
+          ...activityLines().map((l) => `  ${yellow('⚠')} ${l}`),
+          dim('  Trying again with an explicit instruction to use the Edit tool.'),
         ]});
         await runSetupAi(2);
       } else {
@@ -710,20 +749,21 @@ export default async function installSdk({
       }
       const manualFix = nextStyle === 'plugin'
         ? [
-          `Set it up by hand following docs/sdks/${guideLanguage}.md (the Next.js App Router`,
-          `section): wrap your Next config with ${bold('withRestless')} and create ${bold(restlessConfigName)}.`,
+          `Set it up by hand with the guide \`npx ${CLI_NAME} guide ${guideLanguage}\` prints (the Next.js`,
+          `App Router section): wrap your Next config with ${bold('withRestless')} and create ${bold(restlessConfigName)}.`,
         ]
         : [
-          `Wrap your route handlers by hand following docs/sdks/${guideLanguage}.md`,
-          `(the Next.js section), then re-run \`npx ${CLI_NAME} init\`.`,
+          `Wrap your route handlers by hand with the guide \`npx ${CLI_NAME} guide ${guideLanguage}\``,
+          `prints (the Next.js section), then re-run \`npx ${CLI_NAME} init\`.`,
         ];
       fatalError(
         "We couldn't wire the SDK into your Next.js project automatically.",
         [
           ...detail,
+          ...(aiActivity.denied.size ? activityLines().slice(0, 1) : []),
           ...manualFix,
           '',
-          'Re-running with --debug helps us see exactly what the AI did.',
+          `Run \`npx ${CLI_NAME} submit-debug\` to send us this run's log.`,
         ],
       );
       return { detectedLanguage, detectedFramework, guideLanguage, installed: true, wired: false };
@@ -731,11 +771,11 @@ export default async function installSdk({
     fatalError(
       "We couldn't wire the SDK into your code automatically.",
       [
-        `${aiTool} read your project but never modified a source file, even after retries.`,
-        `Install the SDK by hand following docs/sdks/${guideLanguage}.md,`,
+        ...activityLines(),
+        `Install the SDK by hand with the guide \`npx ${CLI_NAME} guide ${guideLanguage}\` prints,`,
         `then re-run \`npx ${CLI_NAME} init\`.`,
         '',
-        'Re-running with --debug helps us see exactly what the AI did.',
+        `Run \`npx ${CLI_NAME} submit-debug\` to send us this run's log.`,
       ],
     );
     // Unreachable: fatalError throws FatalExit.
