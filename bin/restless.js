@@ -139,7 +139,7 @@ process.on('SIGINT', () => {
     console.log(dim(`\n  Setup interrupted. Run \`npx ${CLI_NAME} init\` again to resume.`));
     // A ctrl-c gets no prompt (they chose to stop), but people quit when
     // they're stuck, so say how to send this run's log anyway.
-    console.log(dim(`  Stuck? Send us this run's log: npx ${CLI_NAME} submit-debug\n`));
+    console.log(dim(`  Stuck? Send us this run's debugging info so we can help: npx ${CLI_NAME} submit-debug\n`));
   }
   // A ctrl-c is not a failure, and counting it as one would make the funnel
   // read as though setup breaks far more often than it does.
@@ -517,7 +517,7 @@ function printHelp() {
     ['context', 'Read this repo and teach the AI how your API is meant to be used'],
     ['debug <request-id>', 'Inspect a request, ask AI about it, or have it fixed for you'],
     ['update [projectId]', 'Refresh your spec, edit settings, and sync both to the dashboard'],
-    ['submit-debug [log]', 'Send a run\'s log to the Restless team as a bug report (--email <you>)'],
+    ['submit-debug [log]', 'Send a run\'s debugging info to the Restless team so we can help (--email <you>)'],
     ['telemetry', 'Show or change whether anonymous usage data is sent'],
     ['help', 'Show this help'],
     ['--version', 'Print the installed CLI version'],

@@ -80,7 +80,7 @@ Telemetry is not linked to your Restless account. There is no project ID in the
 payload and the endpoint is unauthenticated, so this data cannot be joined back
 to you even by us.
 
-## How this relates to `--debug` and bug reports
+## How this relates to `--debug` and sending us debugging info
 
 Different thing. `npx restless <command> --debug` uploads a full diagnostic log
 of one run, on purpose, when you are asking us for help with it. That log is
@@ -88,7 +88,7 @@ detailed — it contains file paths and the contents of what the AI did — whic
 exactly why it is opt-in, one run at a time, and never sent unless you pass the
 flag.
 
-The bug report a run offers when it fails, or ends without getting you fully
+The debugging info a run offers to send when it fails, or ends without getting you fully
 set up, is that same log: the copy every run saves to `~/.restless/debug/`. The
 CLI asks before sending anything, along with the
 email we should reply to (it suggests your `git config user.email`, and you

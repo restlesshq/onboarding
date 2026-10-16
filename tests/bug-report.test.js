@@ -99,7 +99,8 @@ describe('the offer on a failed run', () => {
 
     const text = plain();
     expect(text).toContain('For Claude Code: this run failed.');
-    expect(text).toContain('Do not send one without asking them.');
+    expect(text).toMatch(/Do not send it without\s+asking them\./);
+    expect(text).toContain("this run's debugging info so we can help");
     expect(text).toContain('the full AI trace');
     expect(text).toMatch(/submit-debug ".+-init\.json" --email <their email>/);
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -145,7 +146,7 @@ describe('the offer on a failed run', () => {
 
     const text = plain();
     expect(text).toContain('Try the fix above first.');
-    expect(text).toContain("still can't get past this, offer your user a bug report");
+    expect(text).toContain("still can't get past this, offer to send the Restless team this run's");
   });
 
   it('leaves CI one line to send it with, and no instructions for an agent', async () => {
@@ -154,7 +155,7 @@ describe('the offer on a failed run', () => {
     await failRun(mods);
 
     const text = plain();
-    expect(text).toContain("To send this run's log to the Restless team:");
+    expect(text).toContain("To send this run's debugging info to the Restless team so we can help:");
     expect(text).not.toContain('For ');
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -173,7 +174,7 @@ describe('the call link', () => {
 
     const text = plain();
     const headline = text.indexOf("We couldn't wire the SDK");
-    const offerAt = text.indexOf('Bug report');
+    const offerAt = text.indexOf('Send us debugging info');
     const stuck = text.indexOf('Stuck?');
     expect(headline).toBeGreaterThanOrEqual(0);
     expect(offerAt).toBeGreaterThan(headline);
@@ -190,7 +191,7 @@ describe('the call link', () => {
     debug.skipReport('test');
     await debug.finalize({ exitCode: 1 });
 
-    expect(plain()).not.toContain('Bug report');
+    expect(plain()).not.toContain('Send us debugging info');
     expect(plain().match(/Stuck\?/g)).toHaveLength(1);
   });
 
