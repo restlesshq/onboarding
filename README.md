@@ -252,7 +252,7 @@ Authorizing a machine needs a browser once; after that the session is reused for
  - If a run fails, or finishes without getting you fully set up (the SDK never
    confirmed it's capturing requests, the project couldn't be claimed), it
    offers to send that run's log to us as a bug report. It lists what's in the
-   log and asks first, along with the email to reply to and anything you want
-   to add. Nothing is sent if you say no. Under a coding agent, the agent asks
+   log and asks first, along with the email to reply to. Nothing is sent if you
+   say no. Under a coding agent, the agent asks
    you instead, and only sends it (`npx restless submit-debug`) if you agree,
    with a note on what it changed and tried, since its own work isn't in our log.

@@ -2657,7 +2657,6 @@ if (command === '--version' || command === '-v' || command === 'version') {
     for (const line of bugReport.describeReport(file, { whose: 'that run\'s' })) console.log(line);
     console.log('');
     email = await bugReport.askEmail();
-    if (!note) note = await bugReport.askNote();
   } else {
     console.log(`  ${dim(`Submitting ${file}`)}`);
   }

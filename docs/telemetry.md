@@ -91,7 +91,7 @@ flag.
 The bug report a run offers when it fails, or ends without getting you fully
 set up, is that same log. The CLI lists what's in it and asks before sending
 anything, along with the email we should reply to (it suggests your
-`git config user.email`, and you confirm or change it) and an optional note.
+`git config user.email`, and you confirm or change it).
 Under a coding agent, the CLI can't ask you itself, so it tells the agent to ask
 you and gives it the `npx restless submit-debug` command to run if you say yes.
 The agent adds a `--note` saying what it changed and tried, which you see before
