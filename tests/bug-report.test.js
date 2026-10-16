@@ -98,11 +98,11 @@ describe('the offer on a failed run', () => {
     await failRun(mods);
 
     const text = plain();
-    expect(text).toContain('For Claude Code: this run failed.');
-    expect(text).toMatch(/Do not send it without\s+asking them\./);
-    expect(text).toContain("this run's debugging info so we can help");
-    expect(text).toContain('the full AI trace');
-    expect(text).toMatch(/submit-debug ".+-init\.json" --email <their email>/);
+    expect(text).toContain('For Claude Code: this run failed. Ask your user if we can send');
+    expect(text).toMatch(/debugging info \(secrets redacted\)\. If yes, confirm their email/);
+    expect(text).toMatch(/submit-debug ".+-init\.json" --email <email>/);
+    // Concise on purpose: it lands in the agent's context and the transcript.
+    expect(text.slice(text.indexOf('For Claude Code'), text.indexOf('Stuck?')).trim().split('\n').length).toBeLessThanOrEqual(5);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -121,8 +121,7 @@ describe('the offer on a failed run', () => {
     await failRun(mods);
 
     const text = plain();
-    expect(text).toMatch(/--email <their email> --note "<what you changed and tried>"/);
-    expect(text).toContain('the note is what tells');
+    expect(text).toMatch(/--email <email> --note "<what you changed and tried>"/);
   });
 
   it('tells the agent setup is unfinished when the run exits 0 short of onboarding', async () => {
@@ -133,7 +132,7 @@ describe('the offer on a failed run', () => {
     debug.markUnfinished("the SDK isn't capturing requests yet");
     await debug.finalize({ exitCode: 0 });
 
-    expect(plain()).toContain("setup didn't finish (the SDK isn't capturing requests yet), so your user isn't onboarded yet.");
+    expect(plain()).toContain("setup didn't finish (the SDK isn't capturing requests yet).");
   });
 
   it('has the agent try the fix first when the failure is one it should retry', async () => {
@@ -145,8 +144,7 @@ describe('the offer on a failed run', () => {
     await debug.finalize({ exitCode: 1 });
 
     const text = plain();
-    expect(text).toContain('Try the fix above first.');
-    expect(text).toContain("still can't get past this, offer to send the Restless team this run's");
+    expect(text).toMatch(/Try the fix above first\. If you're still\s+stuck, ask your user/);
   });
 
   it('leaves CI one line to send it with, and no instructions for an agent', async () => {
@@ -174,7 +172,7 @@ describe('the call link', () => {
 
     const text = plain();
     const headline = text.indexOf("We couldn't wire the SDK");
-    const offerAt = text.indexOf('Send us debugging info');
+    const offerAt = text.indexOf('For Claude Code');
     const stuck = text.indexOf('Stuck?');
     expect(headline).toBeGreaterThanOrEqual(0);
     expect(offerAt).toBeGreaterThan(headline);
@@ -191,7 +189,7 @@ describe('the call link', () => {
     debug.skipReport('test');
     await debug.finalize({ exitCode: 1 });
 
-    expect(plain()).not.toContain('Send us debugging info');
+    expect(plain()).not.toContain('For Claude Code');
     expect(plain().match(/Stuck\?/g)).toHaveLength(1);
   });
 
