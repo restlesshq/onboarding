@@ -249,3 +249,10 @@ Authorizing a machine needs a browser once; after that the session is reused for
    `npx restless telemetry disable` (or `DO_NOT_TRACK=1`), see exactly what
    would be sent with `RESTLESS_TELEMETRY_DEBUG=1`, and read the full list in
    [docs/telemetry.md](docs/telemetry.md).
+ - If a run fails, or finishes without getting you fully set up (the SDK never
+   confirmed it's capturing requests, the project couldn't be claimed), it
+   offers to send us that run's debugging info so we can help. It asks first, along
+   with the email to reply to, and nothing is sent if you say no. Under a coding
+   agent, the agent asks you instead, tells you what the log contains, and only
+   sends it (`npx restless submit-debug`) if you agree, with a note on what it
+   changed and tried, since its own work isn't in our log.

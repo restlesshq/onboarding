@@ -1561,7 +1561,8 @@ export default async function generateOas({ packageDir, rootDir, update, setSpin
       if (!newHint) {
         console.log('');
         console.log(`  ${dim('No hint given. Exiting.')}`);
-        process.exit(0);
+        debug.markUnfinished("we couldn't find your API");
+        await debug.flushAndExit(0);
       }
       hint = newHint;
       continue;
