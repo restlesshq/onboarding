@@ -136,7 +136,10 @@ process.on('SIGINT', () => {
   // Show cursor in case it was hidden, move below current output
   process.stdout.write('\x1b[?25h\n');
   if (setupInProgress) {
-    console.log(dim(`\n  Setup interrupted. Run \`npx ${CLI_NAME} init\` again to resume.\n`));
+    console.log(dim(`\n  Setup interrupted. Run \`npx ${CLI_NAME} init\` again to resume.`));
+    // A ctrl-c gets no prompt (they chose to stop), but people quit when
+    // they're stuck, so say how to send this run's log anyway.
+    console.log(dim(`  Stuck? Send us this run's log: npx ${CLI_NAME} submit-debug\n`));
   }
   // A ctrl-c is not a failure, and counting it as one would make the funnel
   // read as though setup breaks far more often than it does.
@@ -346,6 +349,15 @@ function hasCodexAuth() {
 
 
 const command = process.argv[2];
+
+// What an unconfirmed test step means for the user, keyed by its last
+// diagnosis. Read in the bug-report offer, so it's phrased for them.
+const TEST_UNFINISHED = {
+  unreachable: "we couldn't reach your server to confirm the SDK works",
+  'no-sdk': "the SDK isn't capturing requests yet",
+  'stale-key': "requests aren't reaching your Restless project (check RESTLESS_KEY)",
+  default: 'we never confirmed the SDK is capturing requests',
+};
 
 /**
  * One-shot banner shown when `--debug` is on. Makes it impossible to
@@ -1109,7 +1121,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // Step 2 sub 3: Run final checks. Verifies the install is correct and
   // surfaces issues for the user to opt into fixing - it never edits the
   // SDK init line itself (that's the CLI's responsibility, not the AI's).
-  await finalChecks({
+  const checks = await finalChecks({
     ctx,
     update: plan.makeUpdater(1),
     setSpinner,
@@ -1117,11 +1129,17 @@ if (command === '--version' || command === '-v' || command === 'version') {
     prevSubs: { 0: 'done', 1: 'done', 2: 'done' },
     pendingReview,
   });
+  // The user can press on past failing checks, and setup lets them, but
+  // they aren't fully set up, so the run ends with a bug-report offer.
+  if (checks && !checks.ok) {
+    const failing = (checks.rows || []).filter((r) => !r.ok).map((r) => r.label).filter(Boolean);
+    debug.markUnfinished(`setup checks still failing${failing.length ? ` (${failing.join(', ')})` : ''}`);
+  }
   plan.makeUpdater(1)({ status: 'done', sub: { 0: 'done', 1: 'done', 2: 'done', 3: 'done' } });
 
   // Step 3: Test your setup (auto-detect the server, confirm the SDK sees
   // requests, and offer an AI fix loop when it doesn't).
-  await testSetup({
+  const tested = await testSetup({
     packageDir,
     rootDir,
     apiRootDir: oasResult.apiRootDir,
@@ -1132,6 +1150,10 @@ if (command === '--version' || command === '-v' || command === 'version') {
     setupKey: ctx.setupKey,
     ctx,
   });
+  // A failed or skipped test still moves on to the account step, which can
+  // end on a celebration, so this is the record that the SDK never proved
+  // it works.
+  if (!tested?.success) debug.markUnfinished(TEST_UNFINISHED[tested?.diagnostic] || TEST_UNFINISHED.default);
 
   // Step 4: Set up account (log in + upload OAS specs).
   await setupAccount({
@@ -1219,6 +1241,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
       .map((f) => f.replace(/\.md$/, ''));
     console.log(red(`\n  ✗ No guide for "${topic}".\n`));
     console.log(`  Try: ${cyan(`npx ${CLI_NAME} guide oas`)} or ${cyan(`npx ${CLI_NAME} guide <${available.join('|')}>`)}\n`);
+    debug.skipReport('unknown guide topic');
     await debug.flushAndExit(1);
   }
   console.log(fs.readFileSync(guidePath, 'utf8'));
@@ -1241,6 +1264,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
   if (inline && isAgent() && process.env.RESTLESS_INTERACTIVE !== '1') {
     const msg = 'Refusing to print the key to an agent - it is written to .env and the SDK reads it from there. '
       + 'Nothing in setup needs it on stdout. (Human at the keyboard? Re-run with RESTLESS_INTERACTIVE=1.)';
+    debug.log('error', { headline: msg });
     if (asJson) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
     else console.log(red(`\n  ✗ ${msg}\n`));
     await debug.flushAndExit(1);
@@ -1280,6 +1304,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     }
     if (!result) result = await ensureProject({ rootDir: keyRoot, apiRootDir, apiKey });
   } catch (err) {
+    debug.log('error', { headline: err.message });
     if (asJson) console.log(JSON.stringify({ ok: false, error: err.message }, null, 2));
     else console.log(red(`\n  ✗ ${err.message}\n`));
     await debug.flushAndExit(1);
@@ -1350,6 +1375,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
   if (!oasFlag) {
     console.log(red('\n  ✗ Missing --oas <file>.\n'));
     console.log(`  Usage: ${cyan(`npx ${CLI_NAME} register --oas .restless/openapi.json --dir api --name "My API"`)}\n`);
+    debug.skipReport('register: missing --oas');
     await debug.flushAndExit(1);
   }
   const { rootDir: regRoot, packageDir: regPkgDir } = resolveProjectDirs(process.cwd());
@@ -1358,6 +1384,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
   const oasAbs = path.isAbsolute(oasFlag) ? oasFlag : path.resolve(process.cwd(), oasFlag);
   if (!fs.existsSync(oasAbs)) {
     console.log(red(`\n  ✗ No such file: ${oasFlag}\n`));
+    debug.skipReport('register: no such file');
     await debug.flushAndExit(1);
   }
   let oasDoc;
@@ -1368,6 +1395,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
   } catch (err) {
     console.log(red(`\n  ✗ ${oasFlag} is not valid JSON: ${err.message}\n`));
     console.log(dim('  Fix the spec and re-run - the SDK and the dashboard both parse this file.\n'));
+    debug.reportAfterRetry();
     await debug.flushAndExit(1);
   }
 
@@ -1382,6 +1410,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     console.log(`  Set ${cyan('servers[0].url')} to the API's real public URL - ask your user if you can't`);
     console.log(`  confirm it - or use a relative mount path like ${cyan('"/"')} if no public URL exists.`);
     console.log(dim(`  Intentional? Re-run with --allow-local-servers.\n`));
+    debug.reportAfterRetry();
     await debug.flushAndExit(1);
   }
 
@@ -1389,6 +1418,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // where at claim time the user just hears their new project has none.
   const upload = readSpecForUpload(oasAbs, oasFlag);
   if (!upload.ok) {
+    debug.log('error', { headline: upload.error });
     console.log(red(`\n  ✗ ${upload.error}`));
     if (upload.detail) console.log(dim(`  ${upload.detail}`));
     console.log(dim('  The spec is uploaded as one document, so every $ref has to resolve.\n'));
@@ -1401,6 +1431,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     console.log(`  A spec this size won't upload, so the project would claim without one.`);
     console.log(`  Trim it and re-run: drop unused schemas, or split the API into`);
     console.log(`  more than one project and register each spec separately.\n`);
+    debug.reportAfterRetry();
     await debug.flushAndExit(1);
   }
 
@@ -1541,6 +1572,16 @@ if (command === '--version' || command === '-v' || command === 'version') {
     }
     console.log('');
   }
+  // An agent runs this in a loop while it fixes things, so a failure is
+  // offered as a bug report only once the fix above has been tried.
+  if (!result.ok) {
+    debug.log('error', {
+      headline: result.ownerIdNeedsConfiguration && result.state === 'ok'
+        ? "verify: owner.id is still 'NEEDS_CONFIGURATION'"
+        : `verify: ${result.state}${result.detail ? ` - ${result.detail}` : ''}`,
+    });
+    debug.reportAfterRetry();
+  }
   await debug.flushAndExit(result.ok ? 0 : 1);
 
 } else if (command === 'login' || command === 'claim') {
@@ -1558,6 +1599,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     const msg = entry?.projectId
       ? `No stored setup key for project ${entry.projectId}.`
       : 'This project has no Restless project yet.';
+    debug.log('error', { headline: msg });
     if (asJson) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
     else {
       console.log(red(`\n  ✗ ${msg}\n`));
@@ -1579,6 +1621,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
       rootDir: loginRoot, projectId: entry.projectId, setupKey: creds.setupKey, writeKeyHash,
     }));
   } catch (err) {
+    debug.log('error', { headline: err.message });
     if (asJson) console.log(JSON.stringify({ ok: false, error: err.message }, null, 2));
     else console.log(red(`\n  ✗ ${err.message}\n`));
     await debug.flushAndExit(1);
@@ -1598,6 +1641,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     }
   } catch (err) {
     const msg = `Couldn't prepare the login link (${err.message}).`;
+    debug.log('error', { headline: msg });
     if (asJson) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
     else console.log(red(`\n  ✗ ${msg}\n`));
     await debug.flushAndExit(1);
@@ -1862,6 +1906,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
       console.log(`  ${red('✗')} Couldn't write ${dim('~/.restless/config.json')}.`);
       console.log(`  ${dim(`Set ${cyan('RESTLESS_TELEMETRY_DISABLED=1')}${'\x1b[2m'} in your environment instead.`)}`);
       console.log('');
+      debug.skipReport('telemetry: config not writable');
       await debug.flushAndExit(1);
     }
   } else {
@@ -1869,6 +1914,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     console.log(`  ${red('✗')} Unknown subcommand ${bold(sub)}.`);
     console.log(`  ${dim(`Usage: npx ${CLI_NAME} telemetry [status|enable|disable]`)}`);
     console.log('');
+    debug.skipReport('telemetry: unknown subcommand');
     await debug.flushAndExit(1);
   }
 } else if (command === 'clear') {
@@ -1919,6 +1965,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
   if (!rawRequestIdArg) {
     console.log(red('\n  ✗ Missing request ID.\n'));
     console.log(`  Usage: npx ${CLI_NAME} debug <request-id>\n`);
+    debug.skipReport('debug: missing request id');
     await debug.flushAndExit(1);
   }
 
@@ -2014,6 +2061,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
       console.log(p.dim('  running and the SDK is wired up.)'));
     }
     console.log('');
+    if (expired) debug.skipReport('debug: request past the 5-minute window');
     await debug.flushAndExit(1);
   }
 
@@ -2299,6 +2347,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     console.log('');
     console.log(`  Run ${cyan(`npx ${CLI_NAME} init`)} first to set one up.`);
     console.log('');
+    debug.skipReport('update: no project here');
     await debug.flushAndExit(1);
   }
 
@@ -2313,6 +2362,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     console.log('');
     console.log(dim(`  Run ${cyan(`npx ${CLI_NAME} help`)} for the full flag list.`));
     console.log('');
+    debug.skipReport('update: bad flags');
     await debug.flushAndExit(1);
   }
   const updateFlags = parsedFlags.flags;
@@ -2338,6 +2388,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
         for (const line of known) console.log(line);
         console.log('');
       }
+      debug.skipReport('update: unknown projectId');
       await debug.flushAndExit(1);
     }
   } else if (updateSettings.apis.length === 1) {
@@ -2362,6 +2413,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
       console.log(`    ${dim('•')} ${a.projectId} ${dim(`(${a.name || a.rootDir})`)}`);
     }
     console.log('');
+    debug.skipReport('update: needs --project');
     await debug.flushAndExit(1);
   }
 
@@ -2515,6 +2567,8 @@ if (command === '--version' || command === '-v' || command === 'version') {
 } else if (command === 'timings') {
   // ── npx restless timings [file] [--json] [--list] ─────────────────────
   // Hidden, development-only (intentionally absent from `printHelp`).
+  // A profiler for our own runs, never part of onboarding.
+  debug.skipReport('timings');
   //
   // Timing spans ride along in the debug log every run writes to
   // ~/.restless/debug/, so this renders a profile of a run that has already
@@ -2572,9 +2626,16 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // run by hand later. Defaults to the most recent log; a path picks another.
   //
   // `--email` is the address the team replies to. An agent passes the one
-  // its user confirmed; at a terminal we ask, prefilled from git.
+  // its user confirmed; at a terminal we ask, prefilled from git. `--note`
+  // is what the log can't hold: under an agent, the agent's own account of
+  // what it changed and tried.
+  //
+  // Every exit here skips the bug-report offer: this command IS the report,
+  // and offering to report a failed report would loop.
+  debug.skipReport('submit-debug');
   const explicitPath = positionalArg(process.argv, 3);
   const emailFlag = flagValue(process.argv, '--email');
+  const noteFlag = flagValue(process.argv, '--note');
   if (emailFlag && !bugReport.isValidEmail(emailFlag)) {
     console.log('');
     console.log(`  ${red(`"${emailFlag}" doesn't look like an email address.`)}`);
@@ -2591,14 +2652,16 @@ if (command === '--version' || command === '-v' || command === 'version') {
   }
   console.log('');
   let email = emailFlag || '';
+  let note = (noteFlag || '').slice(0, bugReport.MAX_NOTE_LENGTH);
   if (!email && isInteractive()) {
     for (const line of bugReport.describeReport(file, { whose: 'that run\'s' })) console.log(line);
     console.log('');
     email = await bugReport.askEmail();
+    if (!note) note = await bugReport.askNote();
   } else {
     console.log(`  ${dim(`Submitting ${file}`)}`);
   }
-  const res = await debug.submitLocalLog(file, { report: { email, source: 'submit-debug' } });
+  const res = await debug.submitLocalLog(file, { report: { email, note, source: 'submit-debug' } });
   bugReport.reportOutcome(res, { email, localPath: file });
   await debug.flushAndExit(res.ok ? 0 : 1);
 } else {
@@ -2606,5 +2669,6 @@ if (command === '--version' || command === '-v' || command === 'version') {
   console.log(`  ${red(`Unknown command: ${command}`)}`);
   console.log('');
   printHelp();
+  debug.skipReport('unknown command');
   await debug.flushAndExit(1);
 }

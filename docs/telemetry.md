@@ -88,11 +88,14 @@ detailed — it contains file paths and the contents of what the AI did — whic
 exactly why it is opt-in, one run at a time, and never sent unless you pass the
 flag.
 
-The bug report a failed run offers is that same log. The CLI lists what's in it
-and asks before sending anything, along with the email we should reply to
-(it suggests your `git config user.email`, and you confirm or change it). Under a
-coding agent, the CLI can't ask you itself, so it tells the agent to ask you and
-gives it the `npx restless submit-debug` command to run if you say yes.
+The bug report a run offers when it fails, or ends without getting you fully
+set up, is that same log. The CLI lists what's in it and asks before sending
+anything, along with the email we should reply to (it suggests your
+`git config user.email`, and you confirm or change it) and an optional note.
+Under a coding agent, the CLI can't ask you itself, so it tells the agent to ask
+you and gives it the `npx restless submit-debug` command to run if you say yes.
+The agent adds a `--note` saying what it changed and tried, which you see before
+it's sent.
 
 Telemetry is the opposite trade: always on, but only ever counts and categories.
 

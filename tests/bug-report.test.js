@@ -114,6 +114,40 @@ describe('the offer on a failed run', () => {
     expect(plain()).toContain(`"${path.join(tmpDir, file)}"`);
   });
 
+  it('asks the agent for a note, since the log holds none of its own work', async () => {
+    process.env.CLAUDECODE = '1';
+    const mods = await fresh();
+    await failRun(mods);
+
+    const text = plain();
+    expect(text).toMatch(/--email <their email> --note "<what you changed and tried>"/);
+    expect(text).toContain('the note is what tells');
+  });
+
+  it('tells the agent setup is unfinished when the run exits 0 short of onboarding', async () => {
+    process.env.CLAUDECODE = '1';
+    const { debug, bugReport } = await fresh();
+    bugReport.install();
+    debug.init({ argv: ['node', 'restless', 'init', '--self-drive'] });
+    debug.markUnfinished("the SDK isn't capturing requests yet");
+    await debug.finalize({ exitCode: 0 });
+
+    expect(plain()).toContain("setup didn't finish (the SDK isn't capturing requests yet), so your user isn't onboarded yet.");
+  });
+
+  it('has the agent try the fix first when the failure is one it should retry', async () => {
+    process.env.CLAUDECODE = '1';
+    const { debug, bugReport } = await fresh();
+    bugReport.install();
+    debug.init({ argv: ['node', 'restless', 'verify'] });
+    debug.reportAfterRetry();
+    await debug.finalize({ exitCode: 1 });
+
+    const text = plain();
+    expect(text).toContain('Try the fix above first.');
+    expect(text).toContain("still can't get past this, offer your user a bug report");
+  });
+
   it('leaves CI one line to send it with, and no instructions for an agent', async () => {
     process.env.CI = '1';
     const mods = await fresh();

@@ -64,7 +64,7 @@ function waitForEnter() {
     };
 
     const onData = (key) => {
-      if (isAbortKey(key)) { cleanup(); process.stdout.write('\n'); process.exit(130); }
+      if (isAbortKey(key)) { cleanup(); process.stdout.write('\n'); debug.abortExit(130); }
       if (key === '\r' || key === '\n') { cleanup(); resolve('enter'); }
       // Ignore everything else - typing in the terminal at this prompt
       // shouldn't do anything except wait for Enter or get pre-empted by
@@ -123,6 +123,7 @@ export default async function setupAccount({
   } catch (err) {
     setSpinner?.('');
     update({ status: 'failed', message: [`  ${red('✗')} ${err.message}`] });
+    debug.markUnfinished("we couldn't upload your spec to claim the project");
     return { apiKey };
   }
   setSpinner?.('');
@@ -132,6 +133,7 @@ export default async function setupAccount({
       `  ${red('✗')} ${artifacts.error || 'OAS upload failed.'}`,
       dim(`  Endpoint: ${SITE_URL}/api/projects/${projectId}/oas`),
     ]});
+    debug.markUnfinished("we couldn't upload your spec to claim the project");
     return { apiKey };
   }
   const endpointCount = artifacts.endpoints;
@@ -185,6 +187,7 @@ export default async function setupAccount({
         `  ${red('✗')} Couldn't prepare login link (HTTP ${startRes.status}).`,
         text ? dim(`  ${text.slice(0, 200)}`) : null,
       ].filter(Boolean) });
+      debug.markUnfinished("we couldn't make the link to claim your project");
       return { apiKey };
     }
   } catch (err) {
@@ -193,6 +196,7 @@ export default async function setupAccount({
       `  ${red('✗')} Couldn't reach ${SITE_URL} to prepare the login link.`,
       dim(`  ${err.message}`),
     ]});
+    debug.markUnfinished("we couldn't make the link to claim your project");
     return { apiKey };
   }
   setSpinner?.('');

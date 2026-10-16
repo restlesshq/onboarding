@@ -300,16 +300,61 @@ describe('setReportOffer', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('does not offer for a non-zero exit with no reported error (a usage mistake)', async () => {
+  it('offers for any non-zero exit, so a failure that never called reportError is still covered', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'verify'] });
+    const offer = vi.fn();
+    debug.setReportOffer(offer);
+    await debug.finalize({ exitCode: 1 });
+    expect(offer).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not offer for an exit marked as not a failure (a usage mistake)', async () => {
     const debug = await freshDebug();
     debug.init({ argv: ['node', 'api', 'debug'] });
     const offer = vi.fn();
     debug.setReportOffer(offer);
+    debug.skipReport('debug: missing request id');
     await debug.finalize({ exitCode: 1 });
     expect(offer).not.toHaveBeenCalled();
   });
 
-  it('does not offer after an error the run recovered from', async () => {
+  it('offers a run that exits 0 but left setup unfinished, and says why', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    const offer = vi.fn();
+    debug.setReportOffer(offer);
+    debug.markUnfinished("the SDK isn't capturing requests yet");
+    await debug.finalize({ exitCode: 0 });
+
+    expect(offer).toHaveBeenCalledTimes(1);
+    expect(offer.mock.calls[0][0].unfinished).toEqual(["the SDK isn't capturing requests yet"]);
+    const written = JSON.parse(fs.readFileSync(path.join(tmpDir, jsonFiles()[0]), 'utf8'));
+    expect(written.entries.some((e) => e.type === 'setup.unfinished')).toBe(true);
+  });
+
+  it('still offers an unfinished setup even if a usage exit was marked too', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    const offer = vi.fn();
+    debug.setReportOffer(offer);
+    debug.skipReport('something');
+    debug.markUnfinished("we couldn't find your API");
+    await debug.finalize({ exitCode: 0 });
+    expect(offer).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells the offer when the failure should be retried before it is reported', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'verify'] });
+    const offer = vi.fn();
+    debug.setReportOffer(offer);
+    debug.reportAfterRetry();
+    await debug.finalize({ exitCode: 1 });
+    expect(offer.mock.calls[0][0].retryFirst).toBe(true);
+  });
+
+  it('does not offer after a clean run, even one that recovered from an error', async () => {
     const debug = await freshDebug();
     debug.init({ argv: ['node', 'api', 'init'] });
     const offer = vi.fn();
@@ -376,5 +421,33 @@ describe('setReportOffer', () => {
     await done;
     await new Promise((r) => setTimeout(r, 0));
     expect(exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('signals', () => {
+  // attachExitHandlers wires process-wide listeners; anything it adds is
+  // removed again so it can't fire inside some later test.
+  const EVENTS = ['SIGTERM', 'SIGHUP', 'beforeExit', 'uncaughtException', 'unhandledRejection'];
+  let before;
+  beforeEach(() => { before = Object.fromEntries(EVENTS.map((e) => [e, process.listeners(e)])); });
+  afterEach(() => {
+    for (const e of EVENTS) {
+      for (const l of process.listeners(e)) if (!before[e].includes(l)) process.off(e, l);
+    }
+  });
+
+  it('writes the log when SIGTERM ends the run, and offers nothing', async () => {
+    const debug = await freshDebug();
+    debug.init({ argv: ['node', 'api', 'init'] });
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => {});
+    const offer = vi.fn();
+    debug.setReportOffer(offer);
+    debug.attachExitHandlers();
+
+    process.emit('SIGTERM');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(jsonFiles().length).toBe(1);
+    expect(offer).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(143);
   });
 });
