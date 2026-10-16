@@ -2654,8 +2654,6 @@ if (command === '--version' || command === '-v' || command === 'version') {
   let email = emailFlag || '';
   let note = (noteFlag || '').slice(0, bugReport.MAX_NOTE_LENGTH);
   if (!email && isInteractive()) {
-    for (const line of bugReport.describeReport(file, { whose: 'that run\'s' })) console.log(line);
-    console.log('');
     email = await bugReport.askEmail();
   } else {
     console.log(`  ${dim(`Submitting ${file}`)}`);

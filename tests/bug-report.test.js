@@ -160,14 +160,44 @@ describe('the offer on a failed run', () => {
   });
 });
 
-describe('describeReport', () => {
-  it('says what is in the log and where to read it first', async () => {
-    const { bugReport } = await fresh();
-    // eslint-disable-next-line no-control-regex
-    const text = bugReport.describeReport('/tmp/x.json').join('\n').replace(/\x1b\[[0-9;]*m/g, '');
-    expect(text).toContain("this run's log");
-    expect(text).toContain('your username and computer name');
-    expect(text).toContain('redacted');
-    expect(text).toContain('/tmp/x.json');
+describe('the call link', () => {
+  it("goes below the offer when a fatal error ends the run, and prints once", async () => {
+    process.env.CLAUDECODE = '1';
+    const { debug, bugReport } = await fresh();
+    const { fatalError } = await import('../lib/errors.js');
+    vi.spyOn(process, 'exit').mockImplementation(() => {});
+    bugReport.install();
+    debug.init({ argv: ['node', 'restless', 'init'] });
+    try { fatalError("We couldn't wire the SDK"); } catch {}
+    await debug.finalize({ exitCode: 1 });
+
+    const text = plain();
+    const headline = text.indexOf("We couldn't wire the SDK");
+    const offerAt = text.indexOf('Bug report');
+    const stuck = text.indexOf('Stuck?');
+    expect(headline).toBeGreaterThanOrEqual(0);
+    expect(offerAt).toBeGreaterThan(headline);
+    expect(stuck).toBeGreaterThan(offerAt);
+    expect(text.match(/Stuck\?/g)).toHaveLength(1);
+  });
+
+  it('still prints when the run ends without an offer after all', async () => {
+    process.env.CLAUDECODE = '1';
+    const { debug, bugReport } = await fresh();
+    bugReport.install();
+    debug.init({ argv: ['node', 'restless', 'init'] });
+    expect(bugReport.holdHelpForOffer()).toBe(true);
+    debug.skipReport('test');
+    await debug.finalize({ exitCode: 1 });
+
+    expect(plain()).not.toContain('Bug report');
+    expect(plain().match(/Stuck\?/g)).toHaveLength(1);
+  });
+
+  it('is not held back under --debug, which uploads instead of asking', async () => {
+    const { debug, bugReport } = await fresh();
+    bugReport.install();
+    debug.init({ argv: ['node', 'restless', 'init', '--debug'] });
+    expect(bugReport.holdHelpForOffer()).toBe(false);
   });
 });
