@@ -531,7 +531,7 @@ export default async function testSetup({
       }
       update({ status: 'done', message: msg });
       debug.log('test-setup.noninteractive', { state: diag.state, landed, unauthorized: !!poll.unauthorized, tested: rows.length });
-      return { success: true, diagnostic: poll.unauthorized ? 'setup-expired' : diag.state };
+      return { success: true, diagnostic: poll.unauthorized ? 'setup-expired' : diag.state, setupKey };
     }
 
     // no-sdk / stale-key → a real problem. Report the diagnosis and, when the
@@ -584,12 +584,23 @@ export default async function testSetup({
         msg.push(`  ${green('✓')} The SDK is picking up your requests${extra}.`);
         update({ status: 'done', message: msg });
         debug.log('test-setup.done', { state: 'ok', logged: !!pollConfig, tested: rows.length });
-        return { success: true, diagnostic: 'ok' };
+        return { success: true, diagnostic: 'ok', setupKey };
       }
       // Captured but nothing landed upstream is the stale-key signature; a poll our own expired
       // key could not make is not, and must never be blamed on the user's RESTLESS_KEY.
-      diag.state = poll.unauthorized ? 'setup-expired' : 'stale-key';
-      lastState = diag.state;
+      if (poll.unauthorized) {
+        // The SDK passed; only our credential lapsed. The account step renews it while staging
+        // the claim, so a fix menu here would stop the run one step short of the link.
+        const msg = batchLines(rows, { done: true });
+        msg.push('');
+        msg.push(`  ${green('✓')} The SDK is picking up your requests.`);
+        msg.push(dim(`     This setup's key had expired, so the dashboard check was skipped - the claim step refreshes it.`));
+        update({ status: 'done', message: msg });
+        debug.log('test-setup.done', { state: 'setup-expired', tested: rows.length });
+        return { success: true, diagnostic: 'setup-expired', setupKey };
+      }
+      diag.state = 'stale-key';
+      lastState = 'stale-key';
     }
 
     // Failing path: show the diagnosis, then offer the fix loop.

@@ -1159,6 +1159,8 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // end on a celebration, so this is the record that the SDK never proved
   // it works.
   if (!tested?.success) debug.markUnfinished(TEST_UNFINISHED[tested?.diagnostic] || TEST_UNFINISHED.default);
+  // The test step may have renewed the setup key mid-run; the claim must use the live one.
+  if (tested?.setupKey) ctx.setupKey = tested.setupKey;
 
   // Step 4: Set up account (log in + upload OAS specs).
   await setupAccount({
