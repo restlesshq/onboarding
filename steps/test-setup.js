@@ -6,6 +6,7 @@ import { bold, dim, green, red, yellow, cyan, orange, singleSelect, ask, askYesN
 import { startStep } from '../lib/step-template.js';
 import { SITE_URL } from '../lib/config.js';
 import { loadSettings } from '../lib/settings.js';
+import { pollForLandedLog, renewSetupKey, saveProjectCreds, hashWriteKey } from '../lib/project-init.js';
 import { runAI, loadPrompt, languagePromptVars } from '../lib/ai.js';
 import * as debug from '../lib/debug.js';
 import { parseStatus, normalizeBaseUrl, basePathFromServers, describeDiagnosis, diagnoseFromHeaders, splitCurlIncludeOutput, fixActions, fixContext, portFromUrl, portFromDocker } from '../lib/test-diagnosis.js';
@@ -425,24 +426,23 @@ export default async function testSetup({
   // Poll the dashboard for a log from this run. A landed log (any status,
   // incl. 401) proves RESTLESS_KEY is valid end-to-end; nothing landing
   // after a clean header points at a stale key.
+  // Renews this setup's key once if the poll 401s (a run that outlived the six-hour key).
+  const renew = ctx.apiKey
+    ? async () => {
+        const renewed = await renewSetupKey({ projectId, writeKeyHash: hashWriteKey(ctx.apiKey) });
+        if (renewed.claimed) return null;
+        saveProjectCreds({ projectId, setupKey: renewed.setupKey, apiKey: ctx.apiKey });
+        setupKey = renewed.setupKey;
+        return renewed.setupKey;
+      }
+    : null;
+
+  // `{ landed, count, unauthorized }`; with no project to poll, the clean header is all we have.
   async function dashboardLogged(since) {
-    if (!pollConfig) return true; // no poll available → the clean header is all we have
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(pollConfig.url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projectId, setupKey, since, limit: 5 }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.logs && data.logs.length > 0) return true;
-        }
-      } catch {}
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-    return false;
+    if (!pollConfig) return { landed: true };
+    const poll = await pollForLandedLog({ projectId, setupKey, since, renew });
+    debug.log('test-setup.poll', { landed: poll.landed, count: poll.count ?? 0, unauthorized: !!poll.unauthorized });
+    return poll;
   }
 
   async function changeUrl() {
@@ -515,21 +515,23 @@ export default async function testSetup({
     if (diag.state === 'ok' || diag.state === 'no-key') {
       const since = new Date(Date.now() - 15000).toISOString();
       const rows = await runTestBatch();
-      let landed = false;
-      if (diag.state === 'ok' && pollConfig) landed = await dashboardLogged(since);
+      let poll = { landed: false };
+      if (diag.state === 'ok' && pollConfig) poll = await dashboardLogged(since);
+      const landed = poll.landed;
       const msg = batchLines(rows, { done: true });
       msg.push('');
       if (diag.state === 'no-key') {
         msg.push(`  ${green('✓')} The SDK is wired up and capturing requests.`);
         msg.push(dim(`     No ${bold('RESTLESS_KEY')} is set, so nothing was uploaded - set it and restart to stream logs.`));
       } else {
-        const extra = landed ? ' and logging them to your dashboard' : '';
+        const extra = landed ? ` and logging them to your dashboard${poll.count > 1 ? ` (${poll.count} received)` : ''}` : '';
         msg.push(`  ${green('✓')} The SDK is picking up your requests${extra}.`);
-        if (!landed && pollConfig) msg.push(dim(`     Header looked good but no log reached the dashboard - double-check ${bold('RESTLESS_KEY')}.`));
+        if (poll.unauthorized) msg.push(dim(`     This setup's key has expired, so the dashboard check was skipped - run ${bold('npx restless login')} to refresh it.`));
+        else if (!landed && pollConfig) msg.push(dim(`     Header looked good but no log reached the dashboard - double-check ${bold('RESTLESS_KEY')}.`));
       }
       update({ status: 'done', message: msg });
-      debug.log('test-setup.noninteractive', { state: diag.state, landed, tested: rows.length });
-      return { success: true, diagnostic: diag.state };
+      debug.log('test-setup.noninteractive', { state: diag.state, landed, unauthorized: !!poll.unauthorized, tested: rows.length });
+      return { success: true, diagnostic: poll.unauthorized ? 'setup-expired' : diag.state };
     }
 
     // no-sdk / stale-key → a real problem. Report the diagnosis and, when the
@@ -574,9 +576,9 @@ export default async function testSetup({
       // Fire a few real requests, animating each status code as it lands, so
       // it's visibly clear we tested it and it works.
       const rows = await runTestBatch();
-      const landed = await dashboardLogged(since);
-      if (landed) {
-        const extra = pollConfig ? ' and logging them to your dashboard' : '';
+      const poll = await dashboardLogged(since);
+      if (poll.landed) {
+        const extra = pollConfig ? ` and logging them to your dashboard${poll.count > 1 ? ` (${poll.count} received)` : ''}` : '';
         const msg = batchLines(rows, { done: true });
         msg.push('');
         msg.push(`  ${green('✓')} The SDK is picking up your requests${extra}.`);
@@ -584,10 +586,10 @@ export default async function testSetup({
         debug.log('test-setup.done', { state: 'ok', logged: !!pollConfig, tested: rows.length });
         return { success: true, diagnostic: 'ok' };
       }
-      // Requests were captured but nothing landed upstream → stale key. Fall
-      // through to the fix menu with that diagnosis.
-      diag.state = 'stale-key';
-      lastState = 'stale-key';
+      // Captured but nothing landed upstream is the stale-key signature; a poll our own expired
+      // key could not make is not, and must never be blamed on the user's RESTLESS_KEY.
+      diag.state = poll.unauthorized ? 'setup-expired' : 'stale-key';
+      lastState = diag.state;
     }
 
     // Failing path: show the diagnosis, then offer the fix loop.
