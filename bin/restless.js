@@ -1530,8 +1530,10 @@ if (command === '--version' || command === '-v' || command === 'version') {
       const entry = loadSettings(verifyRoot).apis?.find((a) => a.projectId) || null;
       const creds = entry?.projectId ? loadProjectCreds(entry.projectId) : null;
       if (creds?.setupKey) {
-        result.landed = await pollForLandedLog({ projectId: entry.projectId, setupKey: creds.setupKey, since });
-        if (!result.landed) result.state = 'stale-key';
+        const poll = await pollForLandedLog({ projectId: entry.projectId, setupKey: creds.setupKey, since });
+        result.landed = poll.landed;
+        if (poll.unauthorized) result.state = 'setup-expired';
+        else if (!poll.landed) result.state = 'stale-key';
       } else {
         result.landed = null;
       }
