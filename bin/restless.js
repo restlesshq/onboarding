@@ -1159,6 +1159,8 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // end on a celebration, so this is the record that the SDK never proved
   // it works.
   if (!tested?.success) debug.markUnfinished(TEST_UNFINISHED[tested?.diagnostic] || TEST_UNFINISHED.default);
+  // The test step may have renewed the setup key mid-run; the claim must use the live one.
+  if (tested?.setupKey) ctx.setupKey = tested.setupKey;
 
   // Step 4: Set up account (log in + upload OAS specs).
   await setupAccount({
@@ -1530,8 +1532,10 @@ if (command === '--version' || command === '-v' || command === 'version') {
       const entry = loadSettings(verifyRoot).apis?.find((a) => a.projectId) || null;
       const creds = entry?.projectId ? loadProjectCreds(entry.projectId) : null;
       if (creds?.setupKey) {
-        result.landed = await pollForLandedLog({ projectId: entry.projectId, setupKey: creds.setupKey, since });
-        if (!result.landed) result.state = 'stale-key';
+        const poll = await pollForLandedLog({ projectId: entry.projectId, setupKey: creds.setupKey, since });
+        result.landed = poll.landed;
+        if (poll.unauthorized) result.state = 'setup-expired';
+        else if (!poll.landed) result.state = 'stale-key';
       } else {
         result.landed = null;
       }

@@ -213,6 +213,14 @@ describe('describeDiagnosis', () => {
     expect(text(describeDiagnosis('no-key', {}))).toContain('RESTLESS_KEY');
   });
 
+  it('setup-expired blames our own key, points at login, and is not an AI fix', () => {
+    const r = describeDiagnosis('setup-expired', { status: 200 });
+    expect(r.canFix).toBe(false);
+    expect(text(r)).toContain('npx restless login');
+    expect(text(r)).not.toContain('RESTLESS_KEY');
+    expect(fixActions('setup-expired').map((a) => a.key)).toEqual(['recheck', 'port', 'skip']);
+  });
+
   it('stale-key is a warning that points at .env, not an AI fix', () => {
     const r = describeDiagnosis('stale-key', { status: 200 });
     expect(r.canFix).toBe(false);

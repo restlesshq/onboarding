@@ -324,7 +324,7 @@ describe('pollForLandedLog', () => {
     const landed = await mod.pollForLandedLog({
       projectId: 'p', setupKey: 's', since: 'now', fetchImpl, sleep: async () => {},
     });
-    expect(landed).toBe(true);
+    expect(landed).toMatchObject({ landed: true });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).toMatchObject({ projectId: 'p', setupKey: 's', since: 'now' });
@@ -337,7 +337,7 @@ describe('pollForLandedLog', () => {
     const landed = await mod.pollForLandedLog({
       projectId: 'p', setupKey: 's', since: 'now', timeoutMs: 10000, fetchImpl, sleep: async () => {},
     });
-    expect(landed).toBe(true);
+    expect(landed).toMatchObject({ landed: true });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
@@ -346,7 +346,7 @@ describe('pollForLandedLog', () => {
     const landed = await mod.pollForLandedLog({
       projectId: 'p', setupKey: 's', since: 'now', timeoutMs: 0, fetchImpl, sleep: async () => {},
     });
-    expect(landed).toBe(false);
+    expect(landed).toMatchObject({ landed: false });
   });
 
   it('treats network errors as not-landed-yet rather than throwing', async () => {
@@ -354,7 +354,7 @@ describe('pollForLandedLog', () => {
     const landed = await mod.pollForLandedLog({
       projectId: 'p', setupKey: 's', since: 'now', timeoutMs: 0, fetchImpl, sleep: async () => {},
     });
-    expect(landed).toBe(false);
+    expect(landed).toMatchObject({ landed: false });
   });
 });
 
@@ -582,5 +582,109 @@ describe('stageForClaim', () => {
     const res = await mod.stageForClaim({ rootDir: tmp, projectId: 'p-1', setupKey: 's-1', writeKeyHash: null, fetchImpl });
     expect(res.artifacts.oas).toBe('claimed');
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('setup key renewal on reuse', () => {
+  function renewingFetch({ projectId = 'project-1', claimed = false } = {}) {
+    let n = 0;
+    return vi.fn(async () => {
+      n += 1;
+      if (claimed && n > 1) return { ok: false, status: 409, json: async () => ({ error: 'key_claimed' }), text: async () => 'claimed' };
+      return { ok: true, status: 201, json: async () => ({ project_id: projectId, setup_key: `setup-${n}` }) };
+    });
+  }
+
+  function ageCreds(projectId, hoursAgo) {
+    const file = path.join(home, '.restless', 'projects', `${projectId}.json`);
+    const creds = JSON.parse(fs.readFileSync(file, 'utf8'));
+    creds.savedAt = new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(file, JSON.stringify(creds));
+  }
+
+  it('reports a freshly saved key as fresh and an old or undated one as stale', () => {
+    const now = Date.now();
+    expect(mod.setupKeyIsFresh({ savedAt: new Date(now - 5 * 60 * 1000).toISOString() }, now)).toBe(true);
+    expect(mod.setupKeyIsFresh({ savedAt: new Date(now - 2 * 60 * 60 * 1000).toISOString() }, now)).toBe(false);
+    expect(mod.setupKeyIsFresh({}, now)).toBe(false);
+  });
+
+  // Matt's re-run, two days after the first: the stored setup key had been reaped server-side,
+  // so the test step's poll 401'd and the CLI blamed his RESTLESS_KEY.
+  it('renews a stale setup key when reusing a project, and persists the new one', async () => {
+    const fetchImpl = renewingFetch();
+    settingsWith({ id: 'a', name: 'API', rootDir: '.' });
+    const first = await mod.ensureProject({ rootDir: tmp, apiRootDir: '.', apiKey: 'rstlss_same', fetchImpl });
+    expect(first).toMatchObject({ projectId: 'project-1', setupKey: 'setup-1', reused: false });
+    ageCreds('project-1', 48);
+
+    const again = await mod.ensureProject({ rootDir: tmp, apiRootDir: '.', apiKey: 'rstlss_same', fetchImpl });
+    expect(again).toMatchObject({ projectId: 'project-1', setupKey: 'setup-2', reused: true, renewed: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body)).toEqual({ write_key_hash: mod.hashWriteKey('rstlss_same') });
+    expect(mod.loadProjectCreds('project-1').setupKey).toBe('setup-2');
+  });
+
+  it('keeps the stored key when the project was claimed meanwhile', async () => {
+    const fetchImpl = renewingFetch({ claimed: true });
+    settingsWith({ id: 'a', name: 'API', rootDir: '.' });
+    await mod.ensureProject({ rootDir: tmp, apiRootDir: '.', apiKey: 'rstlss_same', fetchImpl });
+    ageCreds('project-1', 48);
+    const again = await mod.ensureProject({ rootDir: tmp, apiRootDir: '.', apiKey: 'rstlss_same', fetchImpl });
+    expect(again).toMatchObject({ projectId: 'project-1', setupKey: 'setup-1', reused: true, renewed: false, claimed: true });
+  });
+
+  it('falls back to the stored key when renewal fails, rather than blocking setup', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ project_id: 'project-1', setup_key: 'setup-1' }) })
+      .mockRejectedValueOnce(new Error('offline'));
+    settingsWith({ id: 'a', name: 'API', rootDir: '.' });
+    await mod.ensureProject({ rootDir: tmp, apiRootDir: '.', apiKey: 'rstlss_same', fetchImpl });
+    ageCreds('project-1', 48);
+    const again = await mod.ensureProject({ rootDir: tmp, apiRootDir: '.', apiKey: 'rstlss_same', fetchImpl });
+    expect(again).toMatchObject({ projectId: 'project-1', setupKey: 'setup-1', reused: true, renewed: false });
+  });
+});
+
+describe('pollForLandedLog: expired setup key', () => {
+  const sleep = async () => {};
+
+  it('reports landed logs with their count', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ logs: [{}, {}, {}] }) }));
+    const res = await mod.pollForLandedLog({ projectId: 'p', setupKey: 'k', since: 'now', fetchImpl, sleep, timeoutMs: 50 });
+    expect(res).toMatchObject({ landed: true, count: 3 });
+  });
+
+  it('treats a 401 as an expired setup key, never as "nothing landed"', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'Unauthorized' }) }));
+    const res = await mod.pollForLandedLog({ projectId: 'p', setupKey: 'k', since: 'now', fetchImpl, sleep, timeoutMs: 50 });
+    expect(res).toMatchObject({ landed: false, unauthorized: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('renews once on a 401 and keeps polling with the new key', async () => {
+    const fetchImpl = vi.fn(async (_url, init) => {
+      const body = JSON.parse(init.body);
+      if (body.setupKey === 'old') return { ok: false, status: 401, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ logs: [{}] }) };
+    });
+    const renew = vi.fn(async () => 'new');
+    const res = await mod.pollForLandedLog({ projectId: 'p', setupKey: 'old', since: 'now', fetchImpl, sleep, timeoutMs: 50, renew });
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(res).toMatchObject({ landed: true, count: 1, setupKey: 'new' });
+  });
+
+  it('gives up with unauthorized when the renewal itself fails', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) }));
+    const renew = vi.fn(async () => { throw new Error('claimed'); });
+    const res = await mod.pollForLandedLog({ projectId: 'p', setupKey: 'old', since: 'now', fetchImpl, sleep, timeoutMs: 50, renew });
+    expect(res).toMatchObject({ landed: false, unauthorized: true });
+  });
+
+  it('still times out to not-landed on an empty list', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ logs: [] }) }));
+    const res = await mod.pollForLandedLog({ projectId: 'p', setupKey: 'k', since: 'now', fetchImpl, sleep, timeoutMs: 20, delayMs: 5 });
+    expect(res).toMatchObject({ landed: false });
+    expect(res.unauthorized).toBeUndefined();
   });
 });
