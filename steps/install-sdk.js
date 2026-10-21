@@ -123,7 +123,7 @@ function listPaths(paths, installDir) {
  * What the wiring AI actually did across its attempts, one sentence per fact.
  * Every failed-wiring message is built from this rather than assumed.
  */
-export function describeAiActivity({ edited = [], denied = [] }, installDir, aiTool) {
+export function describeAiActivity({ edited = [], denied = [], error = null }, installDir, aiTool) {
   const lines = [];
   if (denied.length) {
     lines.push(`${aiTool} tried to change files outside this project (${listPaths(denied, installDir)}), and the CLI refused.`);
@@ -131,6 +131,7 @@ export function describeAiActivity({ edited = [], denied = [] }, installDir, aiT
   if (edited.length) {
     lines.push(`${aiTool} edited ${listPaths(edited, installDir)}, but the SDK still isn't wired in.`);
   }
+  if (!lines.length && error) lines.push(`${aiTool} stopped with an error before changing anything: ${error}`);
   if (!lines.length) lines.push(`${aiTool} read your project but never modified a source file.`);
   return lines;
 }
@@ -521,13 +522,17 @@ export default async function installSdk({
   // `attemptNum` 1 = first pass (base prompt). 2 = blind retry with a
   // "you didn't write — you MUST call Edit" coda. 3 = retry with a
   // user-supplied entry file path baked in.
-  const aiActivity = { edited: new Set(), denied: new Set() };
+  const aiActivity = { edited: new Set(), denied: new Set(), error: null };
   const recordAiReport = ({ edited = [], denied = [] } = {}) => {
     for (const p of edited) aiActivity.edited.add(p);
     for (const p of denied) aiActivity.denied.add(p);
   };
-  const activityLines = () =>
-    describeAiActivity({ edited: [...aiActivity.edited], denied: [...aiActivity.denied] }, installDir, aiTool);
+  const recordAiError = (message) => { aiActivity.error = message; };
+  const activityLines = () => describeAiActivity(
+    { edited: [...aiActivity.edited], denied: [...aiActivity.denied], error: aiActivity.error },
+    installDir,
+    aiTool,
+  );
 
   async function runSetupAi(attemptNum, userHint = null) {
     let prompt = basePrompt + nextCoda;
@@ -593,17 +598,20 @@ export default async function installSdk({
       }
     }
     debug.log('install-sdk.ai-attempt', { attempt: attemptNum, hint: userHint || null });
+    aiActivity.error = null;
     try {
       await runAI(prompt, installDir, {
         setSpinner,
         label: `setup-sdk:attempt-${attemptNum}`,
         onReport: recordAiReport,
+        onError: recordAiError,
       });
     } catch (err) {
       // Don't bail on a per-attempt error — the retry loop is the recovery
       // path. The final `fatalError` below covers the case where every
       // attempt either errored or produced no write.
       debug.log('install-sdk.ai-error', { attempt: attemptNum, message: err.message });
+      recordAiError(err.message);
     }
   }
 
