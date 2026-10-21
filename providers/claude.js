@@ -1,6 +1,7 @@
 import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as debug from '../lib/debug.js';
+import { AgentAuthError } from '../lib/errors.js';
 import { getGitRoot, listCheckouts } from '../lib/pathGuard.js';
 import { makeToolGuard } from '../lib/tool-guard.js';
 import { createToolProgressTracker } from '../lib/stream-progress.js';
@@ -163,6 +164,9 @@ export default {
     // is built to handle an empty or partial AI result, so degrading is
     // always better than crashing.
     let runError = null;
+    // Set from the SDK's typed error, not the text: a logged-out agent answers
+    // "Not logged in" in ~1s, which otherwise reads as an empty result.
+    let authFailed = false;
     // Reports the tool call currently being generated. Without it the UI
     // shows the PREVIOUS tool for as long as the model spends composing the
     // next one, which for a large `Write` is a minute or more of apparent
@@ -227,6 +231,7 @@ export default {
         }
 
         if (message.type === 'assistant') {
+          if (message.error === 'authentication_failed') authFailed = true;
           for (const block of message.message.content) {
             if (block.type === 'text') {
               result += block.text;
@@ -278,6 +283,7 @@ export default {
     });
     const edited = [...new Set([...editPaths].filter(([id]) => !deniedIds.has(id)).map(([, p]) => p))];
     onReport?.({ edited, denied: [...new Set(denied)] });
+    if (authFailed) throw new AgentAuthError('claude', runError || result.trim());
     return result;
   },
 };

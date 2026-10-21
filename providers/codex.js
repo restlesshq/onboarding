@@ -1,6 +1,7 @@
 import path from 'path';
 import { spawn } from 'child_process';
 import * as debug from '../lib/debug.js';
+import { AgentAuthError } from '../lib/errors.js';
 
 // Mirrors the truncation budget in providers/claude.js so debug logs from
 // either provider stay roughly the same size.
@@ -164,7 +165,7 @@ export default {
           // Auth is the most common first-run failure. Surface a concrete next
           // step instead of dumping the raw stderr.
           if (/not\s+logged\s+in|please\s+run\s+codex\s+login|api[-_ ]?key|unauthor/i.test(stderrTail)) {
-            reject(new Error(`Codex isn't authenticated. Run \`codex login\` (or set OPENAI_API_KEY) and try again.`));
+            reject(new AgentAuthError('codex'));
             return;
           }
           reject(new Error(`Codex exited with code ${code}${stderrTail ? `:\n${stderrTail}` : ''}`));

@@ -183,4 +183,15 @@ describe('describeAiActivity (what the failure message claims)', () => {
     const [line] = describeAiActivity({ edited }, dir, 'Codex');
     expect(line).toContain('a.go, b.go, c.go and 2 more');
   });
+
+  it('blames the error, not the agent, when a run died before changing anything', () => {
+    expect(describeAiActivity({ error: 'API Error: 529 Overloaded' }, dir, 'Claude Code')).toEqual([
+      'Claude Code stopped with an error before changing anything: API Error: 529 Overloaded',
+    ]);
+  });
+
+  it('still reports edits over an error', () => {
+    const lines = describeAiActivity({ edited: [`${dir}/app.js`], error: 'boom' }, dir, 'Claude Code');
+    expect(lines).toEqual(["Claude Code edited app.js, but the SDK still isn't wired in."]);
+  });
 });

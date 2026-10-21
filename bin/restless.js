@@ -39,6 +39,7 @@ import { normalizeBaseUrl, parseStatus, describeDiagnosis, diagnoseFromHeaders, 
 import { checkOasServers, guessBaseUrl, isPlausibleBaseUrl } from '../lib/base-url.js';
 import { safeWriteFileSync, safeAppendFileSync } from '../lib/pathGuard.js';
 import { fatalError, isFatalExit } from '../lib/errors.js';
+import { claudeSignedOut } from '../lib/claude-auth.js';
 import { findSdkReferences, findOwnerIdPlaceholders } from '../lib/grep-sdk.js';
 import contextStep from '../steps/context.js';
 import { signIn, pickProject, clearAccountToken, reportSignInFailure } from '../lib/context-auth.js';
@@ -790,6 +791,9 @@ if (command === '--version' || command === '-v' || command === 'version') {
   drawSetupHeader();
   const claudeInstalled = hasClaude();
   const codexInstalled = hasCodex();
+  // Started now so its few seconds overlap the menu, and checked before
+  // anything is installed or registered.
+  const claudeSignedOutProbe = claudeInstalled ? claudeSignedOut() : Promise.resolve(false);
   // Three short promises beat a paragraph: the old copy explained the
   // architecture ("talks to our SDKs directly") when all anyone wants to know
   // is whose machine the AI runs on and whether anything leaves it.
@@ -987,6 +991,19 @@ if (command === '--version' || command === '-v' || command === 'version') {
     console.log(cyan('    codex login'));
     console.log('');
     console.log(`  ${dim(`Or set ${cyan('OPENAI_API_KEY')}${'\x1b[2m'} in your env.`)}`);
+    console.log('');
+    console.log(`  Then rerun ${cyan(`npx ${CLI_NAME} init`)}.\n`);
+    await debug.flushAndExit(1);
+  }
+
+  if (choice === 0 && await claudeSignedOutProbe) {
+    console.log('');
+    console.log(red("  ✗ Claude Code isn't logged in.\n"));
+    console.log('  Sign in by running:');
+    console.log(cyan('    claude'));
+    console.log(`  ${dim(`and then ${cyan('/login')}${'\x1b[2m'} inside it.`)}`);
+    console.log('');
+    console.log(`  ${dim(`Or set ${cyan('ANTHROPIC_API_KEY')}${'\x1b[2m'} in your env.`)}`);
     console.log('');
     console.log(`  Then rerun ${cyan(`npx ${CLI_NAME} init`)}.\n`);
     await debug.flushAndExit(1);
