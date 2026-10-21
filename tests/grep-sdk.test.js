@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { findSdkReferences, findOwnerIdPlaceholders, findFilesMatching, posixToJsRegex } from '../lib/grep-sdk.js';
+import { findSdkReferences, findOwnerIdPlaceholders, findFilesMatching, listFiles, posixToJsRegex } from '../lib/grep-sdk.js';
 import { grepForLoader } from '../lib/env-detect.js';
 import { pkgRoot } from '../lib/ai.js';
 
@@ -96,6 +96,52 @@ describe('findFilesMatching', () => {
 
   it('returns empty for a directory that does not exist', () => {
     expect(findFilesMatching('x', path.join(dir, 'missing'))).toEqual([]);
+  });
+});
+
+describe('listFiles', () => {
+  let dir;
+  beforeEach(() => { dir = tmp(); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('lists files by basename glob, pruning the vendored and build trees', () => {
+    write(dir, 'package.json', '{}');
+    write(dir, 'apps/api/package.json', '{}');
+    write(dir, 'node_modules/dep/package.json', '{}');
+    write(dir, 'apps/web/.next/package.json', '{}');
+    write(dir, 'apps/web/dist/package.json', '{}');
+    expect(listFiles(dir, ['package.json'])).toEqual([
+      path.join('apps', 'api', 'package.json'),
+      'package.json',
+    ]);
+  });
+
+  it('matches dotfile prefixes and mid-name wildcards', () => {
+    write(dir, '.env', 'A=1');
+    write(dir, '.env.local', 'A=1');
+    write(dir, 'api/.env.production', 'A=1');
+    write(dir, 'environment.js', '');
+    write(dir, 'docker-compose.dev.yml', '');
+    write(dir, 'compose.yml', '');
+    expect(listFiles(dir, ['.env*'])).toEqual(['.env', '.env.local', path.join('api', '.env.production')]);
+    expect(listFiles(dir, ['docker-compose*.yml', 'compose.yml'])).toEqual(['compose.yml', 'docker-compose.dev.yml']);
+  });
+
+  it('honours maxDepth like find and limit like head', () => {
+    write(dir, 'a.js', '');
+    write(dir, 'one/b.js', '');
+    write(dir, 'one/two/c.js', '');
+    write(dir, 'one/two/three/d.js', '');
+    expect(listFiles(dir, ['*.js'], { maxDepth: 3 })).toEqual([
+      'a.js',
+      path.join('one', 'b.js'),
+      path.join('one', 'two', 'c.js'),
+    ]);
+    expect(listFiles(dir, ['*.js'], { limit: 2 })).toHaveLength(2);
+  });
+
+  it('returns empty for a directory that does not exist', () => {
+    expect(listFiles(path.join(dir, 'missing'), ['*.js'])).toEqual([]);
   });
 });
 

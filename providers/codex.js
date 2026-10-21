@@ -2,6 +2,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import * as debug from '../lib/debug.js';
 import { AgentAuthError } from '../lib/errors.js';
+import { spawnSpec } from '../lib/portable-exec.js';
 
 // Mirrors the truncation budget in providers/claude.js so debug logs from
 // either provider stay roughly the same size.
@@ -103,10 +104,14 @@ export default {
       ];
       let child;
       try {
-        child = spawn('codex', args, {
+        // npm installs `codex` as a .cmd shim on Windows, which a bare
+        // spawn cannot start; the spec routes it through cmd.exe there.
+        const spec = spawnSpec('codex', args);
+        child = spawn(spec.file, spec.args, {
           cwd,
           stdio: ['pipe', 'pipe', 'pipe'],
           env: process.env,
+          ...spec.options,
         });
       } catch (err) {
         reject(new Error(`Failed to spawn codex: ${err.message}`));
