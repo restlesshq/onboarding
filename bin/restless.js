@@ -173,9 +173,13 @@ function _surfaceFatal(err) {
 process.on('uncaughtException', _surfaceFatal);
 process.on('unhandledRejection', _surfaceFatal);
 
+// `where` on Windows: `which` isn't a command there, so both agents read as
+// "not installed" and the CLI steered every Windows user to the paste flow.
+const WHICH = process.platform === 'win32' ? 'where' : 'which';
+
 function hasClaude() {
   try {
-    execSync('which claude', { stdio: 'ignore' });
+    execSync(`${WHICH} claude`, { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -328,7 +332,7 @@ async function offerFix({ log, requestId, cwd, p, CLI_NAME, displayId }) {
 
 function hasCodex() {
   try {
-    execSync('which codex', { stdio: 'ignore' });
+    execSync(`${WHICH} codex`, { stdio: 'ignore' });
     return true;
   } catch {
     return false;
