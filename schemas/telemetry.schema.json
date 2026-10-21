@@ -25,7 +25,7 @@
       "type": "string",
       "description": "Which command ran. Anything unrecognized is reported as `unknown` rather than as typed - raw argv is never sent.",
       "enum": [
-        "init", "setup", "supercharge", "context", "debug", "update", "guide",
+        "init", "setup", "supercharge", "context", "debug", "feedback", "update", "guide",
         "key", "register", "verify", "login", "claim", "reset", "clear",
         "timings", "submit-debug", "telemetry", "help", "version", "unknown"
       ]

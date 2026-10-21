@@ -233,6 +233,26 @@ never discards them: `--json` reports `synced` separately from `ok` and says why
 Authorizing a machine needs a browser once; after that the session is reused for
 24 hours.
 
+# Feedback for an API's maintainers
+
+Every request through Restless gets an id, and that id is enough to send the
+people who run the API a note about it. No sign-in, no project id:
+
+```
+$ npx restless feedback pets-3f1c…-9a2e --message "the pagination params are confusing"
+  ✓ Feedback sent to this API's maintainers.
+```
+
+Run it with no `--message` at a terminal and it asks for one, offers to attach
+an email they can reply to (suggesting your `git config user.email`), and shows
+exactly what will be sent before it sends anything. Under a coding agent it
+never prompts: `--message` is required, and with it missing the CLI says so in
+one line and exits non-zero. `--context` adds what you were doing, `--email`
+sets the reply address, and `--json` prints the server's response as JSON for
+scripts. The note lands on the project's API Feedback page labelled as coming
+from the CLI, with the request attached. Unlike `debug`, there's no five-minute
+window: a note about this morning's call still lands.
+
 # Privacy
 
  - The setup will use AI, but won't use it without asking first.
@@ -249,6 +269,9 @@ Authorizing a machine needs a browser once; after that the session is reused for
    `npx restless telemetry disable` (or `DO_NOT_TRACK=1`), see exactly what
    would be sent with `RESTLESS_TELEMETRY_DEBUG=1`, and read the full list in
    [docs/telemetry.md](docs/telemetry.md).
+ - `npx restless feedback` sends only what you typed (the message, any
+   `--context`, the email if you gave one) plus the request id, and at a terminal
+   it shows you all of that and asks before sending.
  - If a run fails, or finishes without getting you fully set up (the SDK never
    confirmed it's capturing requests, the project couldn't be claimed), it
    offers to send us that run's debugging info so we can help. It asks first, along
