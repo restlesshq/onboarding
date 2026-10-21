@@ -14,6 +14,7 @@ import { getSdkWriter, writerForExtension } from '../lib/sdk-writers/index.js';
 import { loadOas } from '../lib/oas-auth.js';
 import { isInteractive } from '../lib/env.js';
 import { findTestCandidates, buildCurl } from '../lib/test-endpoint.js';
+import { listFiles } from '../lib/grep-sdk.js';
 
 const execAsync = promisify(exec);
 
@@ -176,12 +177,13 @@ function detectLocalPort(searchDir, language = 'javascript', framework = '') {
   //    a Docker `ports:`/`EXPOSE`, then - only if nothing matched - a
   //    localhost URL anywhere (softest, so it never pre-empts an explicit one).
   try {
-    const files = execSync(
-      'find . -maxdepth 3 \\( -name "*.tsx" -o -name "*.ts" -o -name "*.jsx" -o -name "*.js" -o -name "*.mjs" -o -name "*.cjs" -o -name "*.py" -o -name "*.rb" -o -name "*.go" -o -name "*.md" -o -name "*.mdx" -o -name "*.txt" -o -name "docker-compose*.yml" -o -name "docker-compose*.yaml" -o -name "compose.yml" -o -name "compose.yaml" -o -name "Dockerfile" \\) -not -path "*/node_modules/*" | head -100',
-      { cwd: searchDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    );
+    const files = listFiles(searchDir, [
+      '*.tsx', '*.ts', '*.jsx', '*.js', '*.mjs', '*.cjs', '*.py', '*.rb', '*.go',
+      '*.md', '*.mdx', '*.txt',
+      'docker-compose*.yml', 'docker-compose*.yaml', 'compose.yml', 'compose.yaml', 'Dockerfile',
+    ], { maxDepth: 3, limit: 100 });
     const entries = [];
-    for (const file of files.trim().split('\n').filter(Boolean)) {
+    for (const file of files) {
       try { entries.push({ file, content: fs.readFileSync(path.join(searchDir, file), 'utf8') }); } catch {}
     }
     for (const { file, content } of entries) {

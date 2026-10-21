@@ -40,7 +40,7 @@ import { checkOasServers, guessBaseUrl, isPlausibleBaseUrl } from '../lib/base-u
 import { safeWriteFileSync, safeAppendFileSync } from '../lib/pathGuard.js';
 import { fatalError, isFatalExit } from '../lib/errors.js';
 import { claudeSignedOut } from '../lib/claude-auth.js';
-import { findSdkReferences, findOwnerIdPlaceholders } from '../lib/grep-sdk.js';
+import { findSdkReferences, findOwnerIdPlaceholders, listFiles } from '../lib/grep-sdk.js';
 import contextStep from '../steps/context.js';
 import { signIn, pickProject, clearAccountToken, reportSignInFailure } from '../lib/context-auth.js';
 import * as debug from '../lib/debug.js';
@@ -173,9 +173,13 @@ function _surfaceFatal(err) {
 process.on('uncaughtException', _surfaceFatal);
 process.on('unhandledRejection', _surfaceFatal);
 
+// `where` on Windows: `which` isn't a command there, so both agents read as
+// "not installed" and the CLI steered every Windows user to the paste flow.
+const WHICH = process.platform === 'win32' ? 'where' : 'which';
+
 function hasClaude() {
   try {
-    execSync('which claude', { stdio: 'ignore' });
+    execSync(`${WHICH} claude`, { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -328,7 +332,7 @@ async function offerFix({ log, requestId, cwd, p, CLI_NAME, displayId }) {
 
 function hasCodex() {
   try {
-    execSync('which codex', { stdio: 'ignore' });
+    execSync(`${WHICH} codex`, { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -747,7 +751,9 @@ if (command === '--version' || command === '-v' || command === 'version') {
     console.log('');
     try {
       if (process.platform === 'darwin') execSync(`open "${CALENDLY_URL}"`);
-      else if (process.platform === 'win32') execSync(`start "${CALENDLY_URL}"`);
+      // The empty "" is the window title: without it `start` takes the
+      // quoted URL as the title and opens a blank console instead.
+      else if (process.platform === 'win32') execSync(`start "" "${CALENDLY_URL}"`);
       else execSync(`xdg-open "${CALENDLY_URL}"`);
     } catch {}
     await debug.flushAndExit(0);
@@ -1037,7 +1043,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     console.log('');
     try {
       if (process.platform === 'darwin') execSync(`open "${CALENDLY_URL}"`);
-      else if (process.platform === 'win32') execSync(`start "${CALENDLY_URL}"`);
+      else if (process.platform === 'win32') execSync(`start "" "${CALENDLY_URL}"`);
       else execSync(`xdg-open "${CALENDLY_URL}"`);
     } catch {}
     await debug.flushAndExit(0);
@@ -1746,18 +1752,9 @@ if (command === '--version' || command === '-v' || command === 'version') {
   }
 
   // b. Uninstall @restlessai/sdk from every package.json in the tree
-  // (excluding node_modules and other obvious skip dirs). Walks via `find`
-  // so we don't have to roll our own recursive scanner.
+  // (excluding node_modules and other obvious skip dirs).
   function findPackageJsons(root) {
-    try {
-      const out = execSync(
-        "find . -name package.json -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.restless/*' -not -path '*/dist/*' -not -path '*/build/*' -not -path '*/.next/*'",
-        { cwd: root, encoding: 'utf8' },
-      );
-      return out.trim().split('\n').filter(Boolean).map((f) => path.resolve(root, f));
-    } catch {
-      return [];
-    }
+    return listFiles(root, ['package.json']).map((f) => path.resolve(root, f));
   }
 
   // Only npm can remove a dependency for the user safely (see
@@ -1812,15 +1809,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // d. Strip RESTLESS_KEY from .env files (no AI - we never let the model
   // read secret files). Plain regex on every .env* we can find.
   function findEnvFiles(root) {
-    try {
-      const out = execSync(
-        "find . -type f -name '.env*' -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.restless/*'",
-        { cwd: root, encoding: 'utf8' },
-      );
-      return out.trim().split('\n').filter(Boolean).map((f) => path.resolve(root, f));
-    } catch {
-      return [];
-    }
+    return listFiles(root, ['.env*']).map((f) => path.resolve(root, f));
   }
 
   const envFiles = findEnvFiles(resetRoot);

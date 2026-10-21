@@ -12,7 +12,9 @@ import * as debug from '../lib/debug.js';
 function openBrowser(url) {
   try {
     if (process.platform === 'darwin') execSync(`open "${url}"`);
-    else if (process.platform === 'win32') execSync(`start "${url}"`);
+    // The empty "" is the window title: without it `start` takes the quoted
+    // URL as the title and opens a blank console instead of the browser.
+    else if (process.platform === 'win32') execSync(`start "" "${url}"`);
     else execSync(`xdg-open "${url}"`);
   } catch {}
 }
