@@ -4,7 +4,7 @@ import { execSync } from 'child_process';
 import { runAI, loadPrompt } from '../lib/ai.js';
 import { buildApiSourceBlock, buildSourceBlock } from '../lib/inline-source.js';
 import { mergeSpecs, planSpecGroups, countOperations as countMergedOperations } from '../lib/oas-merge.js';
-import { bold, dim, green, red, yellow, cyan, ask, askWithPreview, singleSelect, multiSelect } from '../lib/ui.js';
+import { bold, dim, green, red, yellow, cyan, ask, askWithPreview, askYesNo, singleSelect, multiSelect } from '../lib/ui.js';
 import { guessBaseUrl } from '../lib/base-url.js';
 import { loadSettings, saveSettings, upsertApi, generatePrefix } from '../lib/settings.js';
 import * as telemetry from '../lib/telemetry.js';
@@ -12,7 +12,7 @@ import { startStep } from '../lib/step-template.js';
 import { fatalError } from '../lib/errors.js';
 import { scanCodebase } from '../lib/find-endpoints.js';
 import { scanFor } from '../lib/scanners.js';
-import { detectStack, stackCheckDisabled, unsupportedStackMessage } from '../lib/detect-stack.js';
+import { detectStack, docsRepoMessage, stackCheckDisabled, unsupportedStackMessage } from '../lib/detect-stack.js';
 import { SUPPORTED_LANGUAGES_LABEL } from '../lib/sdk-writers/index.js';
 import { extractJson } from '../lib/extract-json.js';
 import { findOasCandidates } from '../lib/find-oas.js';
@@ -531,7 +531,45 @@ async function locateApis({ packageDir, setSpinner, hint = '', languages = ['jav
   const prompt = loadPrompt('detect-endpoints', { findingsSection, hintSection });
   const result = await runAI(prompt, packageDir, { setSpinner, label: 'detect-endpoints' });
   const parsed = extractJson(result, { requireKey: 'apis' });
-  return parsed?.apis || [];
+  // `repoKind` is what the model says the repo IS when it found no API in
+  // it. The deterministic docs check has already caught the clear-cut
+  // cases before this pass; this is the model's read on everything else,
+  // and it costs nothing extra because the pass runs anyway.
+  return {
+    apis: parsed?.apis || [],
+    repoKind: typeof parsed?.repoKind === 'string' ? parsed.repoKind : 'unknown',
+    repoKindReason: typeof parsed?.repoKindReason === 'string' ? parsed.repoKindReason : '',
+  };
+}
+
+// What the picker says when the scan came back empty, keyed on the model's
+// read of the repo. A docs site or a frontend gets told it is the wrong
+// repo, in those words; everything else keeps the old "point us at it".
+const WRONG_REPO_KINDS = {
+  docs: 'a documentation site',
+  frontend: 'a frontend with no server',
+  library: 'a library or SDK, not a server',
+};
+
+/**
+ * The lines above the empty-result picker, and the question it asks.
+ * Exported for the test; the picker itself needs a terminal.
+ */
+export function noApiFoundMessage({ repoKind, repoKindReason = '', cliName = CLI_NAME } = {}) {
+  const what = WRONG_REPO_KINDS[repoKind];
+  if (!what) {
+    return { lines: [], question: "We couldn't find any APIs. Can you point us at one?" };
+  }
+  const lines = [
+    `  ${yellow('!')} ${bold(`This looks like ${what}, not the server that serves your API.`)}`,
+  ];
+  if (repoKindReason) lines.push(`  ${dim(repoKindReason)}`);
+  lines.push(
+    '',
+    `  Restless wires into the code that handles your API's requests. If that`,
+    `  lives in another repo, run ${cyan(`npx ${cliName} init`)} from there instead.`,
+  );
+  return { lines, question: 'Is the API somewhere in this repo after all?' };
 }
 
 /**
@@ -1480,6 +1518,30 @@ export default async function generateOas({ packageDir, rootDir, update, setSpin
       });
       fatalError(headline, details);
     }
+    // A docs site is a question, not a stop: the person in front of the
+    // terminal can see their own repo, and the AI pass below is a second
+    // opinion if they say scan. The agent playbook stops outright instead,
+    // because there the reader is a model that will otherwise go looking.
+    if (stack.likelyDocs) {
+      const { headline, details } = docsRepoMessage(stack, {
+        rootDir: packageDir,
+        cliName: CLI_NAME,
+        audience: 'human',
+      });
+      update({ status: 'active', activeSub: 0, message: [
+        `  ${yellow('!')} ${bold(headline)}`,
+        ...details.map((line) => (line ? `  ${dim(line)}` : '')),
+      ]});
+      console.log('');
+      const scanAnyway = await askYesNo(`  ${cyan('❯')} Scan it for an API anyway? [y/N] `, { defaultValue: false });
+      debug.log('generate-oas.docs-repo', { scanAnyway, docsEvidence: stack.docsEvidence });
+      if (!scanAnyway) {
+        console.log('');
+        console.log(`  ${dim(`Run ${cyan(`npx ${CLI_NAME} init`)} from the repo that holds your API's server code.`)}`);
+        debug.markUnfinished('init was run in a docs repo, not the API repo');
+        await debug.flushAndExit(0);
+      }
+    }
     setupLanguages = stack.setupLanguages;
   }
 
@@ -1506,7 +1568,8 @@ export default async function generateOas({ packageDir, rootDir, update, setSpin
         : [`  We're looking through your code to find every endpoint and detect the framework.`],
     });
 
-    const apis = await locateApis({ packageDir, setSpinner, hint, languages: setupLanguages });
+    const { apis, repoKind, repoKindReason } = await locateApis({ packageDir, setSpinner, hint, languages: setupLanguages });
+    if (apis.length === 0) debug.log('generate-oas.no-apis', { repoKind, repoKindReason, hint: !!hint });
 
     // Cross-reference each detected API with .restless/settings.json. Match by
     // rootDir first, then by name.
@@ -1534,13 +1597,19 @@ export default async function generateOas({ packageDir, rootDir, update, setSpin
     // Always include "Other" as the last option so the user can redirect us.
     labels.push(`${bold('Other')}\n${dim('tell us where to look')}`);
 
+    // Empty result: say what the repo looks like instead, when the model
+    // could tell. "We couldn't find any APIs" in a docs repo reads as our
+    // failure; "this is a documentation site" is the actual situation.
+    const empty = apis.length === 0 ? noApiFoundMessage({ repoKind, repoKindReason }) : null;
+    if (empty?.lines.length) {
+      update({ status: 'active', activeSub: 0, message: empty.lines });
+    }
+
     console.log('');
     console.log(`  ${dim(`We support ${SUPPORTED_LANGUAGES_LABEL} projects (more coming soon).`)}`);
     console.log('');
     const chosenIdx = await singleSelect(labels, {
-      message: apis.length === 0
-        ? "We couldn't find any APIs. Can you point us at one?"
-        : 'Which API should we map out?',
+      message: empty ? empty.question : 'Which API should we map out?',
       defaultIndex: 0,
     });
 

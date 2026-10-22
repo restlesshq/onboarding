@@ -113,6 +113,25 @@ describe('buildAgentPlan', () => {
     expect(plan).toContain('a scan of dependencies and source found no framework it recognizes');
   });
 
+  it('tells the agent to confirm this is the API repo, and to stop if it is not', () => {
+    // The customer who ran init in their docs repo got "find the API
+    // yourself", and the agent did its best. When we cannot tell what a
+    // repo is, the reader can - so it is told what to do with the answer.
+    write(dir, 'package.json', JSON.stringify({ name: 'docs', dependencies: {} }));
+    write(dir, 'README.md', 'not an api');
+    const plan = buildAgentPlan({ rootDir: dir, cli: 'api', agent: 'Claude Code' });
+    expect(plan).toContain('First confirm this repo holds the server that handles API requests');
+    expect(plan).toContain('documentation site');
+    expect(plan).toContain('rather than inventing an API');
+  });
+
+  it('does not second-guess a repo where the scan found a framework', () => {
+    write(dir, 'package.json', JSON.stringify({ name: 'api', dependencies: { express: '^4' } }));
+    write(dir, 'index.js', "const app = require('express')(); app.get('/pets', h);\n");
+    const plan = buildAgentPlan({ rootDir: dir, cli: 'api', agent: 'Claude Code' });
+    expect(plan).not.toContain('First confirm this repo holds the server');
+  });
+
   it('prefers mapped state over the scan on re-runs', () => {
     write(dir, '.restless/openapi.json', OAS);
     write(
