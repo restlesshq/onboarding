@@ -2645,7 +2645,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
 } else if (command === 'feedback') {
   // Send a note about an API to its maintainers, keyed by a request id.
   // Everything lives in `lib/feedback.js` so both modes (a human who is
-  // prompted and confirms, an agent that passes `--message`) can be tested
+  // prompted, an agent that passes `--message` or is told to) can be tested
   // without a TTY or a network; this only owns the exit.
   const { exitCode, skipReport } = await runFeedback(process.argv, { version: readVersion() });
   if (skipReport) debug.skipReport(skipReport);
