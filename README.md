@@ -243,15 +243,15 @@ $ npx restless feedback pets-3f1c…-9a2e --message "the pagination params are c
   ✓ Feedback sent to this API's maintainers.
 ```
 
-Run it with no `--message` at a terminal and it asks for one, offers to attach
-an email they can reply to (suggesting your `git config user.email`), and shows
-exactly what will be sent before it sends anything. Under a coding agent it
-never prompts: `--message` is required, and with it missing the CLI says so in
-one line and exits non-zero. `--context` adds what you were doing, `--email`
-sets the reply address, and `--json` prints the server's response as JSON for
-scripts. The note lands on the project's API Feedback page labelled as coming
-from the CLI, with the request attached. Unlike `debug`, there's no five-minute
-window: a note about this morning's call still lands.
+Run it with no `--message` at a terminal and it asks for one, asks for your
+email so they can reply (suggesting your `git config user.email`), and sends
+the note as soon as you've answered. Under a coding agent it never prompts:
+with `--message` missing it tells the agent what to collect from you and the
+command to run, then exits non-zero. `--context` adds what you were doing,
+`--email` sets your reply address, and `--json` prints the server's response
+as JSON for scripts. The note lands on the project's API Feedback page
+labelled as coming from the CLI, with the request attached. Unlike `debug`,
+there's no five-minute window: a note about this morning's call still lands.
 
 # Privacy
 

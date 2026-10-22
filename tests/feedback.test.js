@@ -149,16 +149,34 @@ describe('describeOutcome', () => {
 describe('runFeedback under an agent (non-interactive)', () => {
   const noPrompts = {
     ask: vi.fn(async () => { throw new Error('prompted'); }),
-    askYesNo: vi.fn(async () => { throw new Error('prompted'); }),
   };
+  // No spinner either: an agent's one outcome line must be the only line.
+  const spinner = vi.fn(() => { throw new Error('spun'); });
 
-  it('with no --message says so in one line, exits 1, sends nothing, prompts nothing', async () => {
+  it('with no --message tells the agent what to collect and the command, exits 1, sends nothing, prompts nothing', async () => {
     const fetchImpl = vi.fn();
-    const r = await runFeedback(argv(UUID), { interactive: false, fetchImpl, prompts: noPrompts });
+    const r = await runFeedback(argv(`pets-${UUID}`), { interactive: false, agent: true, fetchImpl, prompts: noPrompts });
     expect(r.exitCode).toBe(1);
     expect(r.skipReport).toMatch(/Missing --message/);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(noPrompts.ask).not.toHaveBeenCalled();
+    const lines = out.filter((l) => l.trim());
+    // Addressed to the agent: what to ask its user, and the command to run.
+    expect(lines[0]).toMatch(/^\s*For .*ask your user what to tell/);
+    expect(lines.join('\n')).toMatch(/their email/);
+    // (The CLI name is read off argv, so under vitest it isn't "restless".)
+    expect(lines.join('\n')).toMatch(new RegExp(`npx \\S+ feedback ${UUID} --message "<their feedback>" --email <their email>`));
+    expect(lines.join('\n')).toMatch(/--context/);
+    // It sits in the agent's context and the user's transcript: keep it short.
+    expect(lines.length).toBeLessThanOrEqual(4);
+  });
+
+  it('with no --message in CI or a pipe (no agent) says so in one line', async () => {
+    const fetchImpl = vi.fn();
+    const r = await runFeedback(argv(UUID), { interactive: false, agent: false, fetchImpl, prompts: noPrompts });
+    expect(r.exitCode).toBe(1);
+    expect(r.skipReport).toMatch(/Missing --message/);
+    expect(fetchImpl).not.toHaveBeenCalled();
     const lines = out.filter((l) => l.trim());
     expect(lines[0]).toMatch(/Missing --message/);
     expect(lines).toHaveLength(2); // the reason and the usage line
@@ -166,13 +184,12 @@ describe('runFeedback under an agent (non-interactive)', () => {
 
   it('with --message sends it and prints one outcome line', async () => {
     const fetchImpl = vi.fn(async () => response(201, { ok: true, message: 'Thanks' }));
-    const r = await runFeedback(argv(`pets-${UUID}`, '--message', 'confusing'), { version: '9.9.9', interactive: false, fetchImpl, prompts: noPrompts });
+    const r = await runFeedback(argv(`pets-${UUID}`, '--message', 'confusing'), { version: '9.9.9', interactive: false, agent: true, fetchImpl, prompts: noPrompts, spinner });
     expect(r.exitCode).toBe(0);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0][0]).toMatch(`/api/logs/${UUID}/feedback`);
     expect(fetchImpl.mock.calls[0][1].headers['User-Agent']).toBe('restless-cli/9.9.9');
     expect(noPrompts.ask).not.toHaveBeenCalled();
-    expect(noPrompts.askYesNo).not.toHaveBeenCalled();
     expect(out.filter((l) => l.trim())).toEqual([expect.stringMatching(/✓ Feedback sent/)]);
   });
 
@@ -186,7 +203,7 @@ describe('runFeedback under an agent (non-interactive)', () => {
 
   it('--json prints the server JSON verbatim and exits by status', async () => {
     const fetchImpl = vi.fn(async () => response(201, { ok: true, message: 'Thanks' }));
-    const r = await runFeedback(argv(UUID, '--message', 'x', '--json'), { interactive: false, fetchImpl, prompts: noPrompts });
+    const r = await runFeedback(argv(UUID, '--message', 'x', '--json'), { interactive: false, fetchImpl, prompts: noPrompts, spinner });
     expect(r.exitCode).toBe(0);
     expect(out).toEqual(['{"ok":true,"message":"Thanks"}']);
 
@@ -198,9 +215,10 @@ describe('runFeedback under an agent (non-interactive)', () => {
     expect(out).toEqual(['{"error":"Log not found"}']);
   });
 
-  it('--json reports a usage error and an unreachable server as JSON too', async () => {
-    const r = await runFeedback(argv(UUID, '--json'), { interactive: false, fetchImpl: vi.fn(), prompts: noPrompts });
+  it('--json reports a usage error and an unreachable server as JSON too, even under an agent', async () => {
+    const r = await runFeedback(argv(UUID, '--json'), { interactive: false, agent: true, fetchImpl: vi.fn(), prompts: noPrompts });
     expect(r.exitCode).toBe(1);
+    expect(out).toHaveLength(1); // the agent instructions would corrupt the JSON
     expect(JSON.parse(out[0]).error).toMatch(/Missing --message/);
 
     out.length = 0;
@@ -210,89 +228,112 @@ describe('runFeedback under an agent (non-interactive)', () => {
     expect(JSON.parse(out[0])).toMatchObject({ status: 0, error: expect.stringMatching(/Couldn't reach/) });
   });
 
-  it('--json never prompts, even at a terminal', async () => {
-    const r = await runFeedback(argv(UUID, '--json'), { interactive: true, fetchImpl: vi.fn(), prompts: noPrompts });
+  it('--json never prompts or spins, even at a terminal', async () => {
+    const r = await runFeedback(argv(UUID, '--json'), { interactive: true, fetchImpl: vi.fn(), prompts: noPrompts, spinner });
     expect(r.exitCode).toBe(1);
     expect(noPrompts.ask).not.toHaveBeenCalled();
+
+    const fetchImpl = vi.fn(async () => response(201, { ok: true }));
+    const r2 = await runFeedback(argv(UUID, '--message', 'x', '--json'), { interactive: true, fetchImpl, prompts: noPrompts, spinner });
+    expect(r2.exitCode).toBe(0);
+    expect(spinner).not.toHaveBeenCalled();
   });
 });
 
 describe('runFeedback at a terminal (interactive)', () => {
-  function prompts({ answers = [], yes = true } = {}) {
+  function prompts({ answers = [] } = {}) {
     const queue = [...answers];
     return {
       ask: vi.fn(async (prompt, { defaultValue = '' } = {}) => {
         const next = queue.shift();
         return next === undefined ? defaultValue : next;
       }),
-      askYesNo: vi.fn(async () => yes),
     };
   }
 
-  it('asks for the message and the email, shows what will be sent, confirms, sends', async () => {
-    const fetchImpl = vi.fn(async () => response(201, { ok: true }));
+  it('asks for the message and the email, then sends with no confirm, spinning while it posts', async () => {
+    const stop = vi.fn();
+    const spinner = vi.fn(() => ({ update() {}, stop }));
+    const fetchImpl = vi.fn(async () => {
+      expect(spinner).toHaveBeenCalledTimes(1); // spinning before the request leaves
+      expect(stop).not.toHaveBeenCalled();
+      return response(201, { ok: true });
+    });
     const p = prompts({ answers: ['the pagination params are confusing', 'dev@example.com'] });
-    const r = await runFeedback(argv(UUID), { interactive: true, fetchImpl, prompts: p });
+    const r = await runFeedback(argv(UUID), { interactive: true, agent: false, fetchImpl, prompts: p, spinner });
     expect(r.exitCode).toBe(0);
+    expect(plain(spinner.mock.calls[0][0])).toMatch(/Sending/);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop.mock.invocationCallOrder[0]).toBeLessThan(console.log.mock.invocationCallOrder.at(-1)); // stopped before the outcome line
     expect(p.ask).toHaveBeenCalledTimes(2);
     expect(plain(p.ask.mock.calls[0][0])).toMatch(/Your feedback/);
-    expect(plain(p.ask.mock.calls[1][0])).toMatch(/Email for their reply/);
-    expect(p.askYesNo).toHaveBeenCalledTimes(1);
+    expect(plain(p.ask.mock.calls[1][0])).toMatch(/Your email/);
 
-    // What is sent is shown before the confirm, and is what was sent.
+    // No summary and no "Send it?": the email answer is the last thing
+    // before the request leaves.
     const text = out.join('\n');
-    expect(text).toMatch(/This is what will be sent/);
-    expect(text).toMatch(new RegExp(`request\\s+${UUID}`));
-    expect(text).toMatch(/message\s+the pagination params are confusing/);
-    expect(text).toMatch(/email\s+dev@example.com/);
-    const order = [p.ask.mock.invocationCallOrder[1], p.askYesNo.mock.invocationCallOrder[0], fetchImpl.mock.invocationCallOrder[0]];
-    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(text).not.toMatch(/what will be sent/i);
+    expect(text).not.toMatch(/Send it\?/);
+    expect(p.ask.mock.invocationCallOrder[1]).toBeLessThan(fetchImpl.mock.invocationCallOrder[0]);
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ message: 'the pagination params are confusing', email: 'dev@example.com' });
+    expect(text).toMatch(/✓ Feedback sent/);
     expect(text).toMatch(/they'll write to dev@example.com/);
   });
 
-  it('a blank email sends none and says so in the summary', async () => {
+  // The real spinner writes straight to stdout; the rest of these tests
+  // are about the prompts, so they get a silent one.
+  const quiet = () => ({ update() {}, stop() {} });
+
+  it('prompts even when an agent is detected, if the run is interactive', async () => {
+    // RESTLESS_INTERACTIVE=1 inside an agent's session: the human asked for
+    // the prompts, so the agent hand-over must not win.
     const fetchImpl = vi.fn(async () => response(201, { ok: true }));
     const p = prompts({ answers: ['hello', ''] });
-    await runFeedback(argv(UUID), { interactive: true, fetchImpl, prompts: p });
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ message: 'hello' });
-    expect(out.join('\n')).toMatch(/email\s+none/);
+    const r = await runFeedback(argv(UUID), { interactive: true, agent: true, fetchImpl, prompts: p, spinner: quiet });
+    expect(r.exitCode).toBe(0);
+    expect(p.ask).toHaveBeenCalledTimes(2);
+    expect(out.join('\n')).not.toMatch(/ask your user/);
   });
 
-  it('skips the message prompt when --message is given, still confirms', async () => {
+  it('a blank email sends none', async () => {
     const fetchImpl = vi.fn(async () => response(201, { ok: true }));
-    const p = prompts({ answers: [''] });
-    await runFeedback(argv(UUID, '--message', 'given', '--email', 'dev@example.com'), { interactive: true, fetchImpl, prompts: p });
-    // Only the confirm: message and email both came from flags.
+    const p = prompts({ answers: ['hello', ''] });
+    await runFeedback(argv(UUID), { interactive: true, agent: false, fetchImpl, prompts: p, spinner: quiet });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ message: 'hello' });
+    expect(out.join('\n')).not.toMatch(/write to/);
+  });
+
+  it('asks nothing when --message and --email are both given, and just sends', async () => {
+    const fetchImpl = vi.fn(async () => response(201, { ok: true }));
+    const p = prompts();
+    await runFeedback(argv(UUID, '--message', 'given', '--email', 'dev@example.com'), { interactive: true, agent: false, fetchImpl, prompts: p, spinner: quiet });
     expect(p.ask).not.toHaveBeenCalled();
-    expect(p.askYesNo).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('sends nothing when the confirm is declined, and exits 0', async () => {
-    const fetchImpl = vi.fn();
-    const p = prompts({ answers: ['hello', ''], yes: false });
-    const r = await runFeedback(argv(UUID), { interactive: true, fetchImpl, prompts: p });
-    expect(r.exitCode).toBe(0);
-    expect(r.skipReport).toMatch(/declined/);
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(out.join('\n')).toMatch(/Nothing was sent/);
+  it('asks only for the email when --message is given', async () => {
+    const fetchImpl = vi.fn(async () => response(201, { ok: true }));
+    const p = prompts({ answers: ['dev@example.com'] });
+    await runFeedback(argv(UUID, '--message', 'given'), { interactive: true, agent: false, fetchImpl, prompts: p, spinner: quiet });
+    expect(p.ask).toHaveBeenCalledTimes(1);
+    expect(plain(p.ask.mock.calls[0][0])).toMatch(/Your email/);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ message: 'given', email: 'dev@example.com' });
   });
 
   it('gives up after three blank messages without sending', async () => {
     const fetchImpl = vi.fn();
     const p = prompts({ answers: ['', '  ', ''] });
-    const r = await runFeedback(argv(UUID), { interactive: true, fetchImpl, prompts: p });
+    const r = await runFeedback(argv(UUID), { interactive: true, agent: false, fetchImpl, prompts: p });
     expect(r.exitCode).toBe(0);
     expect(p.ask).toHaveBeenCalledTimes(3);
-    expect(p.askYesNo).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
+    expect(out.join('\n')).toMatch(/Nothing was sent/);
   });
 
   it('re-asks for an email that does not look like one', async () => {
     const fetchImpl = vi.fn(async () => response(201, { ok: true }));
     const p = prompts({ answers: ['hello', 'nope', 'dev@example.com'] });
-    await runFeedback(argv(UUID), { interactive: true, fetchImpl, prompts: p });
+    await runFeedback(argv(UUID), { interactive: true, agent: false, fetchImpl, prompts: p, spinner: quiet });
     expect(out.join('\n')).toMatch(/doesn't look like an email/);
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body).email).toBe('dev@example.com');
   });
@@ -310,10 +351,12 @@ describe('npx restless feedback (real CLI, no network)', () => {
     try { fs.rmSync(debugDir, { recursive: true, force: true }); } catch {}
   });
 
-  function run(args) {
+  // `RESTLESS_AGENT` names an agent; `env` can override it to test the
+  // agentless non-interactive path (CI, a pipe).
+  function run(args, env = {}) {
     return spawnSync(process.execPath, [CLI, 'feedback', ...args], {
       encoding: 'utf8',
-      env: { ...process.env, RESTLESS_DEBUG_DIR: debugDir, RESTLESS_NONINTERACTIVE: '1', RESTLESS_TELEMETRY: 'off', DO_NOT_TRACK: '1', RESTLESS_SITE_URL: 'http://127.0.0.1:9' },
+      env: { ...process.env, RESTLESS_DEBUG_DIR: debugDir, RESTLESS_NONINTERACTIVE: '1', RESTLESS_AGENT: 'claude', RESTLESS_TELEMETRY: 'off', DO_NOT_TRACK: '1', RESTLESS_SITE_URL: 'http://127.0.0.1:9', ...env },
     });
   }
 
@@ -324,8 +367,17 @@ describe('npx restless feedback (real CLI, no network)', () => {
     expect(plain(res.stdout)).toMatch(/Usage: npx restless feedback <request-id>/);
   });
 
-  it('exits 1 in one line when an agent gives no --message', () => {
+  it('tells an agent what to collect, in a few lines, when it gives no --message', () => {
     const res = run([UUID]);
+    expect(res.status).toBe(1);
+    const lines = plain(res.stdout).split('\n').filter((l) => l.trim());
+    expect(lines[0]).toMatch(/^\s*For Claude Code: ask your user/);
+    expect(lines.join('\n')).toMatch(new RegExp(`npx restless feedback ${UUID} --message`));
+    expect(lines.length).toBeLessThanOrEqual(4);
+  });
+
+  it('exits 1 in one line when no agent and no terminal gives no --message', () => {
+    const res = run([UUID], { RESTLESS_AGENT: '', CLAUDECODE: '', CLAUDE_CODE: '', CODEX_SANDBOX: '', CODEX_SANDBOX_NETWORK_DISABLED: '', CI: '1' });
     expect(res.status).toBe(1);
     const lines = plain(res.stdout).split('\n').filter((l) => l.trim());
     expect(lines[0]).toMatch(/Missing --message/);
