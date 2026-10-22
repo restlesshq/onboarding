@@ -39,6 +39,10 @@ Glob: `*.{js,ts,mjs,cjs}`. Use `output_mode: "content"`.
 
 For a **Python** package, read the module that builds the app instead. Routes live in decorators (`@app.get("/pets")`, `@router.post(...)`), in a Django URLconf (`urlpatterns` with `path()` / `re_path()`, often only `include()`ing others), or in a Starlette route table. A package with a framework dep and zero matched routes is the signature of a route style the regex does not cover, exactly as it is in JavaScript.
 
+## Step 2b - If there is no API here, say what the repo is instead
+
+A repo can have a `package.json` and some JavaScript and still not be an API: a documentation site (Docusaurus, VitePress, Mintlify, MkDocs, a ReadMe docs sync), a frontend with no server, a client library or SDK, or a CLI. If after Step 2 you have found no server handling HTTP requests, do not invent one from folder names, route-like strings in prose, or a static site's own dev server. Return an empty `apis` array and set `repoKind` to what the repo actually is. A static-site generator that does serve API routes (Next.js `pages/api`, Astro endpoints) is an `api`.
+
 ## Step 3 - Group endpoints into APIs
 
 If all endpoints come from a single directory / single package.json, emit one API. In a monorepo with multiple package.json files, emit one API per package that has its own endpoints - use `rootDir` relative to the repo root.
@@ -48,6 +52,8 @@ If all endpoints come from a single directory / single package.json, emit one AP
 Output ONLY this JSON block - no explanation before or after:
 ```json
 {
+  "repoKind": "api",
+  "repoKindReason": "Fastify server in src/server.ts handles the routes below",
   "apis": [
     {
       "name": "Public API",
@@ -62,6 +68,8 @@ Output ONLY this JSON block - no explanation before or after:
   ]
 }
 ```
+
+`repoKind` is one of `"api"`, `"docs"`, `"frontend"`, `"library"`, `"empty"` or `"unknown"`, and `repoKindReason` is one short sentence naming the evidence. When `apis` is non-empty, `repoKind` is `"api"`. When it is empty, the kind is what the user sees, so be specific: "Docusaurus site, 140 Markdown pages under docs/, no server" beats "no API found".
 
 Set `language` to `"javascript"`, `"typescript"` or `"python"`, matching the package the endpoints actually came from. The findings label each framework signal with its language when more than one is present; otherwise use the file extensions. Getting this wrong sends the installer at the wrong SDK, so prefer the signal over a guess.
 

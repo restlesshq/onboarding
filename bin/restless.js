@@ -30,7 +30,7 @@ import { isInteractive, isAgent, detectAgent, agentLabel } from '../lib/env.js';
 import { buildAgentPlan } from '../lib/agent-plan.js';
 import { getSdkWriter } from '../lib/sdk-writers/index.js';
 import { normalizeLanguage } from '../lib/sdk-writers/languages.js';
-import { detectStack, noCodeMessage, stackCheckDisabled, unsupportedStackMessage } from '../lib/detect-stack.js';
+import { detectStack, docsRepoMessage, noCodeMessage, stackCheckDisabled, unsupportedStackMessage } from '../lib/detect-stack.js';
 import { resolveOwningDir } from '../lib/install-target.js';
 import { apiDirKey, loadSettings, saveSettings, upsertApi, generatePrefix, formatRequestId, stripRequestIdPrefix } from '../lib/settings.js';
 import { findExistingEnvFile, existingRestlessKey, replaceRestlessKey } from '../steps/prepare-account.js';
@@ -616,15 +616,22 @@ if (command === '--version' || command === '-v' || command === 'version') {
       languages: stack.languages,
       setupLanguages: stack.setupLanguages,
       nodeEvidence: stack.nodeEvidence,
+      docsEvidence: stack.docsEvidence,
+      likelyDocs: stack.likelyDocs,
       extensions: stack.extensions,
     });
     // An empty folder counts as `supported` (nothing foreign was found), and
     // used to get the full playbook with "find the API yourself" - which an
-    // agent can't act on when there is no API to find.
-    if (!stack.supported || !stack.foundCode) {
-      const { headline, details } = stack.supported
-        ? noCodeMessage({ rootDir: agentRoot, cliName: CLI_NAME })
-        : unsupportedStackMessage(stack, { rootDir: agentRoot, cliName: CLI_NAME });
+    // agent can't act on when there is no API to find. A docs site is the
+    // same mistake with a package.json in it: the customer pasted the
+    // Get Started prompt into the repo for their docs, not their API, and
+    // the playbook sent the agent hunting for an API that isn't there.
+    if (!stack.supported || !stack.foundCode || stack.likelyDocs) {
+      const { headline, details } = !stack.supported
+        ? unsupportedStackMessage(stack, { rootDir: agentRoot, cliName: CLI_NAME })
+        : stack.likelyDocs
+          ? docsRepoMessage(stack, { rootDir: agentRoot, cliName: CLI_NAME })
+          : noCodeMessage({ rootDir: agentRoot, cliName: CLI_NAME });
       try {
         fatalError(headline, details);
       } catch {
