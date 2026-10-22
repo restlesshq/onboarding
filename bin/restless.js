@@ -48,6 +48,7 @@ import * as bugReport from '../lib/bug-report.js';
 import * as timings from '../lib/timings.js';
 import * as telemetry from '../lib/telemetry.js';
 import { renderReport, renderJson, summarize } from '../lib/timings-report.js';
+import { runFeedback, FEEDBACK_FLAGS } from '../lib/feedback.js';
 
 // Initialize debug capture FIRST, before anything else writes to stdout -
 // the stream wrappers need to be in place to record the welcome screen.
@@ -521,6 +522,7 @@ function printHelp() {
     ['init', 'Set up Restless here: scan your code, install the SDK, wire it in'],
     ['context', 'Read this repo and teach the AI how your API is meant to be used'],
     ['debug <request-id>', 'Inspect a request, ask AI about it, or have it fixed for you'],
+    ['feedback <request-id>', "Tell an API's maintainers what was confusing, missing, or broken"],
     ['update [projectId]', 'Refresh your spec, edit settings, and sync both to the dashboard'],
     ['submit-debug [log]', 'Send a run\'s debugging info to the Restless team so we can help (--email <you>)'],
     ['telemetry', 'Show or change whether anonymous usage data is sent'],
@@ -561,6 +563,12 @@ function printHelp() {
   const ctxWidth = Math.max(...contextFlags.map(([name]) => name.length));
   for (const [name, hint] of contextFlags) {
     console.log(`    ${cyan(name.padEnd(ctxWidth))}  ${dim(hint)}`);
+  }
+  console.log('');
+  console.log(`  ${bold('Flags for')} ${cyan('feedback')}`);
+  const feedbackWidth = Math.max(...FEEDBACK_FLAGS.map(([name]) => name.length));
+  for (const [name, hint] of FEEDBACK_FLAGS) {
+    console.log(`    ${cyan(name.padEnd(feedbackWidth))}  ${dim(hint)}`);
   }
   console.log('');
   // `update` needs no TTY when it's told exactly what to do, which is the
@@ -2634,6 +2642,14 @@ if (command === '--version' || command === '-v' || command === 'version') {
   console.log(`  ${dim(file)}`);
   console.log('');
   await debug.flushAndExit(0);
+} else if (command === 'feedback') {
+  // Send a note about an API to its maintainers, keyed by a request id.
+  // Everything lives in `lib/feedback.js` so both modes (a human who is
+  // prompted and confirms, an agent that passes `--message`) can be tested
+  // without a TTY or a network; this only owns the exit.
+  const { exitCode, skipReport } = await runFeedback(process.argv, { version: readVersion() });
+  if (skipReport) debug.skipReport(skipReport);
+  await debug.flushAndExit(exitCode);
 } else if (command === 'submit-debug') {
   // Every run writes a local debug log to ~/.restless/debug/; this uploads
   // one to the Restless team as a bug report. It's the command a failed run
