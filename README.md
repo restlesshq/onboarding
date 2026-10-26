@@ -274,8 +274,9 @@ users (and the coding agents driving it) can tell you what confused them:
 $ npx restless init cli
 ```
 
-Run it in your CLI's repo. It finds the package with a `bin` (in a monorepo it
-asks which one, or takes `--dir <path>`), signs you in and asks which project
+Run it in your CLI's repo. It finds the CLI (a Node package with a `bin`, or a
+Go, Python, Rust or Ruby one; in a monorepo it asks which, or takes
+`--dir <path>`), signs you in and asks which project
 the notes belong to (`--project <slug>` skips the question), then shows what it
 will do and asks before changing anything:
 
@@ -284,17 +285,19 @@ will do and asks before changing anything:
 - **Any other Node CLI** gets [`@restlessai/cli-feedback`](https://www.npmjs.com/package/@restlessai/cli-feedback),
   and your local AI adds a `feedback` command that follows your CLI's own
   conventions for commands, flags, help and exit codes.
+- **Go, Python, Rust and Ruby CLIs** have no package to install: your local AI
+  writes a `feedback` command in your CLI's language that posts the note straight
+  to `https://<project>.restlessdocs.com/feedback`, using the HTTP client your
+  CLI already has (the standard library in Go, Python and Ruby). Set
+  `RESTLESS_FEEDBACK_URL` to point it somewhere else while testing.
 
-It installs with your package manager (npm, pnpm, yarn or bun) and leaves the
-changes uncommitted for you to review. Notes arrive on your project's API
+Node CLIs install with your package manager (npm, pnpm, yarn or bun). Either
+way the changes are left uncommitted for you to review. Notes arrive on your project's API
 Feedback page, labelled with your CLI's name and version. Running it again on a
 CLI that already has the command changes nothing.
 
 Under a coding agent it doesn't spawn a second AI: it prints the steps, filled
 in for your project, for the agent you're using to do in the open.
-
-Node CLIs only for now. Go, Python, Ruby and Rust CLIs are detected and turned
-away without changes.
 
 # Privacy
 

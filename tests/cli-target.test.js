@@ -7,7 +7,7 @@ import {
   CORE_PACKAGE,
   OCLIF_PACKAGE,
   describeCli,
-  detectNonNodeCli,
+  describeNativeCli,
   detectPackageManager,
   feedbackStatus,
   findCliPackages,
@@ -68,24 +68,40 @@ describe('findCliPackages', () => {
   });
 });
 
-describe('detectNonNodeCli', () => {
-  it('names Go, Python, Rust and Ruby CLIs', () => {
-    write('go.mod', 'module x\n\nrequire github.com/spf13/cobra v1.8.0\n');
-    expect(detectNonNodeCli([root])).toEqual({ language: 'go', evidence: 'go.mod' });
-    fs.rmSync(path.join(root, 'go.mod'));
-    write('pyproject.toml', '[project]\nname = "x"\n\n[project.scripts]\npets = "x:main"\n');
-    expect(detectNonNodeCli([root])).toMatchObject({ language: 'python' });
+describe('describeNativeCli', () => {
+  it('reads a Go CLI from go.mod, with its cmd/ binaries', () => {
+    write('go.mod', 'module github.com/acme/petctl\n\nrequire github.com/spf13/cobra v1.8.0\n');
+    expect(describeNativeCli([root])).toMatchObject({ language: 'go', name: 'petctl', bins: ['petctl'], native: true });
+    write('cmd/pets/main.go', 'package main\n');
+    expect(describeNativeCli([root]).bins).toEqual(['pets']);
+  });
+
+  it('reads a Python CLI from pyproject scripts, or from setup.py', () => {
+    write('pyproject.toml', '[project]\nname = "petcli"\nversion = "1.4.0"\n\n[project.scripts]\npets = "petcli.main:app"\n');
+    expect(describeNativeCli([root])).toMatchObject({ language: 'python', name: 'petcli', version: '1.4.0', bins: ['pets'] });
     fs.rmSync(path.join(root, 'pyproject.toml'));
-    write('Cargo.toml', '[package]\nname = "x"\n\n[dependencies]\nclap = "4"\n');
-    expect(detectNonNodeCli([root])).toMatchObject({ language: 'rust' });
+    write('setup.py', "setup(name='petcli', entry_points={'console_scripts': ['pets=petcli.main:main']})\n");
+    expect(describeNativeCli([root])).toMatchObject({ language: 'python', name: 'petcli', bins: ['pets'] });
+  });
+
+  it('reads Rust and Ruby CLIs', () => {
+    write('Cargo.toml', '[package]\nname = "petcli"\nversion = "0.3.0"\n\n[dependencies]\nclap = "4"\n');
+    expect(describeNativeCli([root])).toMatchObject({ language: 'rust', name: 'petcli', version: '0.3.0', bins: ['petcli'] });
     fs.rmSync(path.join(root, 'Cargo.toml'));
-    write('pets.gemspec', 'Gem::Specification.new do |s|\n  s.executables = ["pets"]\nend\n');
-    expect(detectNonNodeCli([root])).toMatchObject({ language: 'ruby' });
+    write('pets.gemspec', 'Gem::Specification.new do |s|\n  s.name = "petcli"\n  s.executables = %w[pets]\nend\n');
+    expect(describeNativeCli([root])).toMatchObject({ language: 'ruby', name: 'petcli', bins: ['pets'] });
   });
 
   it('ignores a Go module that is not a CLI', () => {
     write('go.mod', 'module x\n\nrequire github.com/go-chi/chi/v5 v5.0.0\n');
-    expect(detectNonNodeCli([root])).toBeNull();
+    expect(describeNativeCli([root])).toBeNull();
+  });
+
+  it('counts a native CLI as wired once its source names the feedback host', () => {
+    write('go.mod', 'module pets\n\nrequire github.com/spf13/cobra v1.8.0\n');
+    expect(feedbackStatus(describeNativeCli([root])).state).toBe('none');
+    write('cmd/feedback.go', 'const feedbackURL = "https://pets.restlessdocs.com/feedback"\n');
+    expect(feedbackStatus(describeNativeCli([root])).state).toBe('wired');
   });
 });
 

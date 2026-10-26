@@ -38,6 +38,16 @@ describe('argument handling', () => {
 
 describe('buildSetupPrompt', () => {
   const cli = (oclif) => ({ name: 'petcli', dir: '/repo/cli', bins: ['pets'], oclif });
+  const native = (language) => ({ name: 'petcli', dir: '/repo/cli', bins: ['pets'], oclif: false, native: true, language });
+
+  it('fills every placeholder for each native language', () => {
+    for (const language of ['go', 'python', 'ruby', 'rust']) {
+      const prompt = buildSetupPrompt({ cli: native(language), project: 'pets', installNote: '' });
+      expect(prompt).not.toMatch(/\{\{\w+\}\}/);
+      expect(prompt).toContain('https://pets.restlessdocs.com/feedback');
+      expect(prompt).toContain('Never read `.env*` files');
+    }
+  });
 
   it('fills every placeholder on both paths', () => {
     for (const oclif of [true, false]) {
@@ -117,13 +127,24 @@ describe('the command, end to end', () => {
     });
   }
 
-  it('refuses a Go CLI without signing in or writing anything', async () => {
-    writeRepo('go.mod', 'module pets\n\nrequire github.com/spf13/cobra v1.8.0\n');
-    const res = await run([]);
-    expect(res.status).toBe(1);
-    expect(res.out).toContain('only sets up Node CLIs so far');
-    expect(res.out).toContain('Go CLI (go.mod)');
+  it('hands a coding agent native Go steps that call the endpoint directly, installing nothing', async () => {
+    signedIn();
+    writeRepo('go.mod', 'module github.com/acme/petctl\n\nrequire github.com/spf13/cobra v1.8.0\n');
+    const res = await run(['--project', 'pets']);
+    expect(res.status).toBe(0);
+    expect(res.out).toContain('add a `feedback` command to a Go CLI');
+    expect(res.out).toContain('POST https://pets.restlessdocs.com/feedback');
+    expect(res.out).toContain('User-Agent: petctl/');
+    expect(res.out).not.toContain('npm install');
     expect(fs.readdirSync(repo)).toEqual(['go.mod']);
+  });
+
+  it('leaves a native CLI that already calls the endpoint alone', async () => {
+    writeRepo('go.mod', 'module pets\n\nrequire github.com/spf13/cobra v1.8.0\n');
+    writeRepo('cmd/feedback.go', 'const u = "https://pets.restlessdocs.com/feedback"\n');
+    const res = await run([]);
+    expect(res.status).toBe(0);
+    expect(res.out).toContain('already has a feedback command');
   });
 
   it('says where it looked when there is no CLI at all', async () => {

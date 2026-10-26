@@ -13,8 +13,9 @@ import {
   CORE_PACKAGE,
   OCLIF_PACKAGE,
   describeCli,
-  detectNonNodeCli,
+  describeNativeCli,
   detectPackageManager,
+  feedbackEndpoint,
   feedbackStatus,
   findCliPackages,
   installArgs,
@@ -26,10 +27,45 @@ import * as telemetry from '../lib/telemetry.js';
 /**
  * `restless init cli`: add a `feedback` command to the user's own CLI, so
  * its users can tell the API's maintainers what confused them. oclif CLIs get
- * the plugin; anything else in Node gets the core package wired in by the AI.
+ * the plugin, other Node CLIs the core package, and Go, Python, Rust and Ruby
+ * CLIs a native command that calls the feedback endpoint directly.
  */
 
-const LANGUAGE_NAMES = { go: 'Go', python: 'Python', rust: 'Rust', ruby: 'Ruby' };
+/** What the native prompt needs to know per language, beyond the shared HTTP contract. */
+const NATIVE = {
+  go: {
+    label: 'Go',
+    neverRead: '`vendor/` or the module cache',
+    httpClient: 'Use `net/http` and `encoding/json` from the standard library. Add no new module.',
+    ttyCheck: '`os.Stdin.Stat()` reports `os.ModeCharDevice`',
+    versionHint: 'Use the version variable the CLI already has (often set with `-ldflags`); if it has none, use `dev`.',
+    testHint: 'If the CLI has tests, add one for `feedback` that points `RESTLESS_FEEDBACK_URL` at an `httptest.Server`, so it never sends a real note. Run `go build ./...` and `go test ./...`.',
+  },
+  python: {
+    label: 'Python',
+    neverRead: '`.venv/`, `venv/` or `site-packages/`',
+    httpClient: 'Use `urllib.request` and `json` from the standard library, unless the CLI already depends on `requests` or `httpx`, in which case use that. Add no new dependency.',
+    ttyCheck: '`sys.stdin.isatty()` is true',
+    versionHint: 'Use the version the CLI already reports; if it has none, read it with `importlib.metadata.version`.',
+    testHint: 'If the CLI has tests, add one for `feedback` that points `RESTLESS_FEEDBACK_URL` at a local `http.server` or mocks the HTTP call, so it never sends a real note. Run the existing tests.',
+  },
+  ruby: {
+    label: 'Ruby',
+    neverRead: '`vendor/bundle/`',
+    httpClient: 'Use `net/http` and `json` from the standard library. Add no new gem.',
+    ttyCheck: '`$stdin.tty?` is true',
+    versionHint: 'Use the CLI\'s own version constant (often `<Module>::VERSION`).',
+    testHint: 'If the CLI has tests, add one for `feedback` that stubs the HTTP call or points `RESTLESS_FEEDBACK_URL` at a local `WEBrick` server, so it never sends a real note. Run the existing tests.',
+  },
+  rust: {
+    label: 'Rust',
+    neverRead: '`target/`',
+    httpClient: 'Use the HTTP client the crate already depends on (`reqwest`, `ureq`, ...). If it has none, add `ureq` with its `json` feature, which is small and blocking, and say so when you finish.',
+    ttyCheck: '`std::io::stdin().is_terminal()` is true (`std::io::IsTerminal`)',
+    versionHint: 'Use `env!("CARGO_PKG_VERSION")`.',
+    testHint: 'If the crate has tests, add one for `feedback` that points `RESTLESS_FEEDBACK_URL` at a local server, so it never sends a real note. Run `cargo build` and `cargo test`.',
+  },
+};
 
 /** True when the second word selects this command: `init cli`, `setup cli`, `supercharge cli`. */
 export function isInitCli(argv) {
@@ -46,12 +82,29 @@ export function parseInitCliArgs(argv) {
 }
 
 function cliLabel(cli, rootDir) {
-  const notes = [path.relative(rootDir, cli.dir), cli.oclif ? 'oclif' : ''].filter(Boolean);
+  const notes = [path.relative(rootDir, cli.dir), cli.oclif ? 'oclif' : NATIVE[cli.language]?.label || ''].filter(Boolean);
   return notes.length ? `${cli.name} ${dim(`(${notes.join(', ')})`)}` : cli.name;
 }
 
 /** The prompt for this CLI, also used verbatim as the coding-agent handoff. */
 export function buildSetupPrompt({ cli, project, installNote }) {
+  if (cli.native) {
+    const lang = NATIVE[cli.language];
+    return loadPrompt('setup-cli-feedback-native', {
+      cliName: cli.name,
+      cliDir: cli.dir,
+      bin: cli.bins[0],
+      project,
+      endpoint: feedbackEndpoint(project),
+      installNote,
+      languageLabel: lang.label,
+      neverRead: lang.neverRead,
+      httpClient: lang.httpClient,
+      ttyCheck: lang.ttyCheck,
+      versionHint: lang.versionHint,
+      testHint: lang.testHint,
+    });
+  }
   const vars = {
     cliName: cli.name,
     cliDir: cli.dir,
@@ -103,18 +156,11 @@ async function chooseCli(argv, cwd) {
   const clis = findCliPackages(startDir, rootDir);
 
   if (clis.length === 0) {
-    const other = detectNonNodeCli([startDir, rootDir]);
-    if (other) {
-      return {
-        exit: fail('unsupported-stack', `${CLI_NAME} init cli only sets up Node CLIs so far.`, [
-          `This looks like a ${LANGUAGE_NAMES[other.language] || other.language} CLI (${other.evidence}).`,
-          'Support for other languages is coming. Nothing was changed.',
-        ]),
-      };
-    }
+    const native = describeNativeCli([startDir, rootDir]);
+    if (native) return { cli: native, rootDir };
     return {
       exit: fail('unsupported-stack', 'No CLI found here.', [
-        `Looked for a package.json with a "bin" entry under ${startDir}.`,
+        `Looked under ${startDir} for a Node CLI (a package.json with "bin"), or a Go, Python, Rust or Ruby one.`,
         `Run this from your CLI's directory, or pass --dir <path>.`,
       ]),
     };
@@ -215,9 +261,9 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
   if (chosen.exit !== undefined) return chosen.exit;
   const { cli, rootDir } = chosen;
 
-  telemetry.recordDetect({ language: 'javascript', framework: cli.oclif ? 'oclif' : undefined });
+  telemetry.recordDetect({ language: cli.language || 'javascript', framework: cli.oclif ? 'oclif' : undefined });
   const status = feedbackStatus(cli);
-  debug.log('init-cli.target', { oclif: cli.oclif, state: status.state, bins: cli.bins });
+  debug.log('init-cli.target', { oclif: cli.oclif, language: cli.language || 'javascript', state: status.state, bins: cli.bins });
 
   console.log('');
   console.log(`  ${bold('Add a feedback command to')} ${cliLabel(cli, rootDir)}`);
@@ -235,18 +281,19 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
   const project = await chooseProject(argv, cli, status);
   if (!project) return 1;
 
-  const manager = detectPackageManager(cli.dir, rootDir);
-  let specs;
+  // A native CLI installs nothing: its command calls the endpoint itself.
+  const manager = cli.native ? null : detectPackageManager(cli.dir, rootDir);
+  let specs = [];
   try {
-    specs = packageSpecs(cli.oclif);
+    if (!cli.native) specs = packageSpecs(cli.oclif);
   } catch (err) {
     return fail('sdk-install-failed', err.message);
   }
-  const installText = installCommandText(manager, specs);
+  const installText = cli.native ? '' : installCommandText(manager, specs);
 
   // ── Driven by a coding agent: hand over the steps, as `init` does ──────
   if (handOff) {
-    const installNote = `### 0. Install the package\n\nIn \`${cli.dir}\`, run:\n\n\`\`\`sh\n${installText}\n\`\`\``;
+    const installNote = cli.native ? '' : `### 0. Install the package\n\nIn \`${cli.dir}\`, run:\n\n\`\`\`sh\n${installText}\n\`\`\``;
     console.log('');
     console.log(`# Add a \`feedback\` command to ${cli.name}, for ${agentLabel(detectAgent())}`);
     console.log('');
@@ -270,10 +317,12 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
   console.log('');
   console.log(`  ${dim('Project')} ${cyan(project.name || project.slug)}${project.name && project.name !== project.slug ? dim(` (${project.slug})`) : ''}`);
   console.log(`  ${dim('Will:')}`);
-  console.log(`    ${dim('·')} run ${cyan(installText)}`);
+  if (installText) console.log(`    ${dim('·')} run ${cyan(installText)}`);
   console.log(cli.oclif
     ? `    ${dim('·')} have ${provider.label} register the plugin in package.json`
-    : `    ${dim('·')} have ${provider.label} add a feedback command that matches your CLI's others`);
+    : cli.native
+      ? `    ${dim('·')} have ${provider.label} add a ${NATIVE[cli.language].label} feedback command that calls the Restless API directly`
+      : `    ${dim('·')} have ${provider.label} add a feedback command that matches your CLI's others`);
   console.log(`    ${dim('·')} leave the changes uncommitted for you to review`);
   console.log('');
   if (!args.yes && !(await askYesNo(`  Continue? ${dim('(Y/n)')} `, { defaultValue: true }))) {
@@ -283,20 +332,22 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
   }
 
   const before = gitStatus(rootDir);
-  const [cmd, cmdArgs] = installArgs(manager, specs);
-  const installSpinner = startSpinner(`Installing ${cli.oclif ? OCLIF_PACKAGE : CORE_PACKAGE}`);
-  const installed = spawnSync(cmd, cmdArgs, { cwd: cli.dir, encoding: 'utf8', shell: process.platform === 'win32' });
-  installSpinner.stop();
-  if (installed.status !== 0) {
-    const tail = `${installed.stderr || ''}${installed.error ? installed.error.message : ''}`.trim().split('\n').slice(-6);
-    return fail('sdk-install-failed', `${installText} failed.`, tail);
+  if (!cli.native) {
+    const [cmd, cmdArgs] = installArgs(manager, specs);
+    const installSpinner = startSpinner(`Installing ${cli.oclif ? OCLIF_PACKAGE : CORE_PACKAGE}`);
+    const installed = spawnSync(cmd, cmdArgs, { cwd: cli.dir, encoding: 'utf8', shell: process.platform === 'win32' });
+    installSpinner.stop();
+    if (installed.status !== 0) {
+      const tail = `${installed.stderr || ''}${installed.error ? installed.error.message : ''}`.trim().split('\n').slice(-6);
+      return fail('sdk-install-failed', `${installText} failed.`, tail);
+    }
+    console.log(green(`  ✓ Installed ${cli.oclif ? OCLIF_PACKAGE : CORE_PACKAGE}`));
   }
-  console.log(green(`  ✓ Installed ${cli.oclif ? OCLIF_PACKAGE : CORE_PACKAGE}`));
 
   const prompt = buildSetupPrompt({
     cli,
     project: project.slug,
-    installNote: `\`${installText}\` has already been run in \`${cli.dir}\`. Don't install anything else.`,
+    installNote: cli.native ? '' : `\`${installText}\` has already been run in \`${cli.dir}\`. Don't install anything else.`,
   });
   let summary = '';
   try {
@@ -304,11 +355,11 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
   } catch (err) {
     debug.log('init-cli.ai-error', { message: err?.message });
     return fail('sdk-wiring-failed', `${provider.label} couldn't finish adding the command.`, [
-      'The package is installed; re-run this to try the wiring again.',
+      cli.native ? 'Re-run this to try again.' : 'The package is installed; re-run this to try the wiring again.',
     ]);
   }
 
-  const after = describeCli(cli.dir) || cli;
+  const after = cli.native ? cli : describeCli(cli.dir) || cli;
   const result = feedbackStatus(after);
   const changed = changedFiles(before, gitStatus(rootDir));
   console.log('');
