@@ -265,6 +265,37 @@ as JSON for scripts. The note lands on the project's API Feedback page
 labelled as coming from the CLI, with the request attached. Unlike `debug`,
 there's no five-minute window: a note about this morning's call still lands.
 
+# A feedback command in your own CLI
+
+If you ship a CLI for your API, `init cli` gives it a `feedback` command, so its
+users (and the coding agents driving it) can tell you what confused them:
+
+```
+$ npx restless init cli
+```
+
+Run it in your CLI's repo. It finds the package with a `bin` (in a monorepo it
+asks which one, or takes `--dir <path>`), signs you in and asks which project
+the notes belong to (`--project <slug>` skips the question), then shows what it
+will do and asks before changing anything:
+
+- **oclif CLIs** get [`@restlessai/oclif-plugin-feedback`](https://www.npmjs.com/package/@restlessai/oclif-plugin-feedback),
+  registered in `oclif.plugins` with a `restless` block naming your project.
+- **Any other Node CLI** gets [`@restlessai/cli-feedback`](https://www.npmjs.com/package/@restlessai/cli-feedback),
+  and your local AI adds a `feedback` command that follows your CLI's own
+  conventions for commands, flags, help and exit codes.
+
+It installs with your package manager (npm, pnpm, yarn or bun) and leaves the
+changes uncommitted for you to review. Notes arrive on your project's API
+Feedback page, labelled with your CLI's name and version. Running it again on a
+CLI that already has the command changes nothing.
+
+Under a coding agent it doesn't spawn a second AI: it prints the steps, filled
+in for your project, for the agent you're using to do in the open.
+
+Node CLIs only for now. Go, Python, Ruby and Rust CLIs are detected and turned
+away without changes.
+
 # Privacy
 
  - The setup will use AI, but won't use it without asking first.
@@ -284,6 +315,9 @@ there's no five-minute window: a note about this morning's call still lands.
  - `npx restless feedback` sends only what you typed (the message, any
    `--context`, the email if you gave one) plus the request id, and at a terminal
    it shows you all of that and asks before sending.
+ - `npx restless init cli` reads your CLI's repo locally, like `init`. The
+   feedback command it adds sends only what your users type, plus your CLI's
+   name and version.
  - If a run fails, or finishes without getting you fully set up (the SDK never
    confirmed it's capturing requests, the project couldn't be claimed), it
    offers to send us that run's debugging info so we can help. It asks first, along
