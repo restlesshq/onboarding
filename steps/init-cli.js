@@ -253,7 +253,7 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
   setProvider(provider.id);
 
   console.log('');
-  console.log(`  ${dim('Project')} ${cyan(project.slug)}`);
+  console.log(`  ${dim('Project')} ${cyan(project.name || project.slug)}${project.name && project.name !== project.slug ? dim(` (${project.slug})`) : ''}`);
   console.log(`  ${dim('Will:')}`);
   console.log(`    ${dim('·')} run ${cyan(installText)}`);
   console.log(cli.oclif
