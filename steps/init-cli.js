@@ -187,6 +187,18 @@ async function chooseProject(argv, cli, status) {
   return picked.project;
 }
 
+/** Await `promise`, showing a spinner only if it is still running after a moment. */
+async function settleWithSpinner(promise, message) {
+  const quick = await Promise.race([promise.then(() => true), new Promise((r) => setTimeout(() => r(false), 150))]);
+  if (quick) return promise;
+  const spinner = startSpinner(message);
+  try {
+    return await promise;
+  } finally {
+    spinner.stop();
+  }
+}
+
 async function chooseProvider({ hasClaude, hasCodex, hasCodexAuth }) {
   if (hasClaude() && !(await claudeSignedOut())) return { id: 'claude', label: 'Claude Code' };
   if (hasCodex() && hasCodexAuth()) return { id: 'codex', label: 'Codex' };
@@ -217,6 +229,9 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
     return 0;
   }
 
+  // The Claude probe takes seconds, so it runs while the person signs in and picks, as `init` does.
+  const handOff = isAgent() && !args.selfDrive;
+  const providerProbe = handOff ? null : chooseProvider(deps);
   const project = await chooseProject(argv, cli, status);
   if (!project) return 1;
 
@@ -230,7 +245,7 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
   const installText = installCommandText(manager, specs);
 
   // ── Driven by a coding agent: hand over the steps, as `init` does ──────
-  if (isAgent() && !args.selfDrive) {
+  if (handOff) {
     const installNote = `### 0. Install the package\n\nIn \`${cli.dir}\`, run:\n\n\`\`\`sh\n${installText}\n\`\`\``;
     console.log('');
     console.log(`# Add a \`feedback\` command to ${cli.name}, for ${agentLabel(detectAgent())}`);
@@ -242,7 +257,7 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
     return 0;
   }
 
-  const provider = await chooseProvider(deps);
+  const provider = await settleWithSpinner(providerProbe, 'Checking for Claude Code or Codex');
   if (!provider) {
     return fail('agent-unavailable', 'This needs Claude Code or Codex, signed in.', [
       'Install one: npm install -g @anthropic-ai/claude-code (then run claude and /login),',
