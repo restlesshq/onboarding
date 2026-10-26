@@ -137,8 +137,8 @@ async function chooseCli(argv, cwd) {
 
 async function chooseProject(argv, cli, status) {
   const args = parseInitCliArgs(argv);
-  // An agent runs on the user's own machine, so the browser sign-in still works there; only CI can't.
-  const canBrowse = isInteractive() || (isAgent() && !process.env.CI);
+  // An agent runs on the user's own machine, so they can still open the printed link; only CI can't.
+  const signInOpts = { interactive: isInteractive(), linkOnly: isAgent() && !process.env.CI };
   const preferredId = args.project || status.project;
   const pick = (token) => pickProject({
     token,
@@ -148,7 +148,7 @@ async function chooseProject(argv, cli, status) {
     message: `Which project should ${cli.name}'s feedback go to?`,
   });
 
-  const session = await signIn({ interactive: canBrowse });
+  const session = await signIn(signInOpts);
   if (!session.ok) {
     reportSignInFailure(session, { retry: 'init cli' });
     telemetry.recordError('account-claim-failed');
@@ -157,7 +157,7 @@ async function chooseProject(argv, cli, status) {
   let picked = await pick(session.token);
   if (!picked.ok && picked.expired && session.cached) {
     clearAccountToken();
-    const fresh = await signIn({ interactive: canBrowse });
+    const fresh = await signIn(signInOpts);
     if (!fresh.ok) {
       reportSignInFailure(fresh, { retry: 'init cli' });
       telemetry.recordError('account-claim-failed');
