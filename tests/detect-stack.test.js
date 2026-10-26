@@ -480,6 +480,70 @@ describe('routing (setupLanguages)', () => {
       expect(stack.docsEvidence).toContain('vitepress in package.json');
       expect(stack.docsEvidence).toContain(path.join('docs', '.vitepress') + '/');
     });
+
+    // APIs that declare no server dep we recognize, which the first cut of
+    // this check stopped as docs sites. Each one carries a docs-ish signal
+    // on purpose: spec tooling, or a docs/ folder bigger than the code.
+    function markdownPages(at, n = 12) {
+      for (let i = 0; i < n; i++) write(dir, `${at}/p${i}.md`, `# P${i}\n`);
+    }
+
+    it('does not count spec tooling such as rdme or Redocly as a docs site', () => {
+      // `rdme` is how a ReadMe customer pushes the API repo's spec to their
+      // docs, so it shows up in API repos at least as often as docs repos.
+      write(dir, 'package.json', pkg({ '@aws-sdk/client-dynamodb': '^3' }, {
+        devDependencies: { rdme: '^9', '@redocly/cli': '^1' },
+      }));
+      write(dir, 'redocly.yaml', 'apis: {}\n');
+      write(dir, 'src/pets.js', 'export const handler = async () => ({ statusCode: 200 });\n');
+      const stack = detectStack(dir);
+      expect(stack.docsEvidence).toEqual([]);
+      expect(stack.likelyDocs).toBe(false);
+    });
+
+    it('still flags a Markdown docs repo that syncs with rdme', () => {
+      write(dir, 'package.json', pkg({}, { devDependencies: { rdme: '^9' } }));
+      markdownPages('docs', 15);
+      const stack = detectStack(dir);
+      expect(stack.likelyDocs).toBe(true);
+      expect(stack.docsEvidence).toEqual(['15 Markdown pages, 0 source files']);
+    });
+
+    it('does not flag hosted-function APIs that keep a docs/ folder', () => {
+      const cases = [
+        { deps: { 'firebase-functions': '^5' }, handler: "exports.pets = onRequest((req, res) => res.json([]));\n" },
+        { deps: { '@middy/core': '^5' }, handler: 'export const handler = async () => ({ statusCode: 200 });\n' },
+        { deps: {}, dev: { serverless: '^3' }, handler: 'export const handler = async () => ({});\n' },
+        { deps: {}, dev: { '@vercel/node': '^3' }, handler: 'export default (req, res) => res.json([]);\n' },
+      ];
+      for (const { deps, dev, handler } of cases) {
+        write(dir, 'package.json', pkg(deps, dev ? { devDependencies: dev } : {}));
+        write(dir, 'functions/index.js', handler);
+        markdownPages('docs');
+        expect(detectStack(dir).likelyDocs, JSON.stringify({ deps, dev })).toBe(false);
+        fs.rmSync(dir, { recursive: true, force: true });
+        dir = tmp();
+      }
+    });
+
+    it('does not flag a functions API whose only signal is its deploy config', () => {
+      write(dir, 'package.json', pkg({}));
+      write(dir, 'serverless.yml', 'functions:\n  pets:\n    handler: handler.pets\n');
+      write(dir, 'handler.js', 'module.exports.pets = async () => ({ statusCode: 200 });\n');
+      markdownPages('docs');
+      expect(detectStack(dir).likelyDocs).toBe(false);
+    });
+
+    it('does not route a Python serverless repo to the JavaScript scanner', () => {
+      // The Serverless Framework deploys Python too. Its dep vetoes the docs
+      // verdict but is not Node evidence.
+      write(dir, 'package.json', pkg({}, { devDependencies: { serverless: '^3' } }));
+      write(dir, 'requirements.txt', 'boto3\n');
+      write(dir, 'handler.py', 'def pets(event, context):\n    return {"statusCode": 200}\n');
+      const stack = detectStack(dir);
+      expect(stack.nodeEvidence).toEqual([]);
+      expect(stack.setupLanguages).toEqual(['python']);
+    });
   });
 
   describe('extensions', () => {
