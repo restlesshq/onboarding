@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { detectStack, noCodeMessage, unsupportedStackMessage, stackCheckDisabled } from '../lib/detect-stack.js';
+import { detectStack, docsRepoMessage, noCodeMessage, unsupportedStackMessage, stackCheckDisabled } from '../lib/detect-stack.js';
 import { describeLanguage, describeLanguages, SUPPORTED_LANGUAGES } from '../lib/sdk-writers/index.js';
 
 function tmp() {
@@ -251,6 +251,28 @@ describe('noCodeMessage', () => {
   });
 });
 
+describe('docsRepoMessage', () => {
+  const stack = { docsEvidence: ['@docusaurus/core in package.json', '140 Markdown pages, 9 source files'] };
+
+  it('cites the evidence and tells the agent what to ask, with the escape hatch', () => {
+    const { headline, details } = docsRepoMessage(stack, { rootDir: '/w/docs', cliName: 'api' });
+    expect(headline).toContain('documentation site');
+    const body = details.join('\n');
+    expect(body).toContain('@docusaurus/core in package.json; 140 Markdown pages');
+    expect(body).toContain('/w/docs');
+    expect(body).toContain('Ask the user where the API lives');
+    expect(body).toContain('RESTLESS_SKIP_STACK_CHECK=1 npx api init');
+  });
+
+  it('drops the agent-only instructions for a human reader', () => {
+    const { details } = docsRepoMessage(stack, { rootDir: '/w/docs', cliName: 'api', audience: 'human' });
+    const body = details.join('\n');
+    expect(body).not.toContain('Ask the user');
+    expect(body).not.toContain('RESTLESS_SKIP_STACK_CHECK');
+    expect(body).toContain('run `npx api init` from there');
+  });
+});
+
 describe('stackCheckDisabled', () => {
   const original = process.env.RESTLESS_SKIP_STACK_CHECK;
   afterEach(() => {
@@ -351,6 +373,176 @@ describe('routing (setupLanguages)', () => {
       const stack = detectStack(dir);
       expect(stack.supported).toBe(false);
       expect(stack.foundCode).toBe(true);
+    });
+  });
+
+  describe('likelyDocs', () => {
+    // The shape of the docs repo an enterprise customer ran `init` in: a
+    // package.json, a little JS, and a lot of Markdown. It passed the stack
+    // check (JavaScript is the default when nothing foreign is around) and
+    // the agent playbook told the reader to "find the API yourself".
+    function docusaurusSite(root = '') {
+      const at = (rel) => path.join(root, rel);
+      write(dir, at('package.json'), pkg({ '@docusaurus/core': '^3', '@docusaurus/preset-classic': '^3', react: '^18' }));
+      write(dir, at('docusaurus.config.js'), 'module.exports = { title: "Docs" };\n');
+      write(dir, at('sidebars.js'), 'module.exports = {};\n');
+      for (let i = 0; i < 12; i++) write(dir, at(`docs/page-${i}.md`), `# Page ${i}\n`);
+    }
+
+    it('flags a Docusaurus site with no server as docs, citing the evidence', () => {
+      docusaurusSite();
+      const stack = detectStack(dir);
+      expect(stack.likelyDocs).toBe(true);
+      // Still a Node repo as far as routing goes - the caller decides what
+      // to do with the verdict, and the escape hatch has to land somewhere.
+      expect(stack.supported).toBe(true);
+      expect(stack.foundCode).toBe(true);
+      expect(stack.setupLanguages).toEqual(['javascript']);
+      expect(stack.docsEvidence).toEqual([
+        '@docusaurus/core, @docusaurus/preset-classic in package.json',
+        'docusaurus.config.js',
+        '12 Markdown pages, 2 source files',
+      ]);
+    });
+
+    it('flags a docs site nested under docs/ in an otherwise empty repo', () => {
+      write(dir, 'README.md', '# monorepo\n');
+      docusaurusSite('docs');
+      expect(detectStack(dir).likelyDocs).toBe(true);
+    });
+
+    it('flags a Markdown-heavy tree with a bare package.json and no generator dep', () => {
+      // No generator at all - just scripts and prose. The tree shape alone
+      // carries it, because there is nothing that could be a server here.
+      write(dir, 'package.json', pkg({ prettier: '^3' }, { scripts: { lint: 'prettier --check .' } }));
+      write(dir, 'scripts/check-links.js', 'console.log("ok");\n');
+      for (let i = 0; i < 15; i++) write(dir, `guides/g${i}.mdx`, `# G${i}\n`);
+      const stack = detectStack(dir);
+      expect(stack.likelyDocs).toBe(true);
+      expect(stack.docsEvidence).toEqual(['15 Markdown pages, 1 source file']);
+    });
+
+    it('does not flag a docs site that also serves an API', () => {
+      // Greg's edge case: a static-site generator with endpoints. Server
+      // evidence wins and the docs table is never consulted.
+      docusaurusSite('website');
+      write(dir, 'api/package.json', pkg({ express: '^4' }));
+      write(dir, 'api/server.js', "app.get('/pets', h)\n");
+      const stack = detectStack(dir);
+      expect(stack.likelyDocs).toBe(false);
+      expect(stack.docsEvidence).toEqual([]);
+    });
+
+    it('does not flag a Next.js or Astro site, which own API routes', () => {
+      write(dir, 'package.json', pkg({ next: '^14', nextra: '^3' }));
+      for (let i = 0; i < 12; i++) write(dir, `pages/p${i}.mdx`, `# P${i}\n`);
+      expect(detectStack(dir).likelyDocs).toBe(false);
+      fs.rmSync(dir, { recursive: true, force: true });
+      dir = tmp();
+      write(dir, 'package.json', pkg({ astro: '^4', '@astrojs/starlight': '^0.20' }));
+      for (let i = 0; i < 12; i++) write(dir, `src/content/docs/p${i}.md`, `# P${i}\n`);
+      expect(detectStack(dir).likelyDocs).toBe(false);
+    });
+
+    it('does not flag a docs site whose source serves routes without a framework dep', () => {
+      docusaurusSite();
+      write(dir, 'preview/server.js', "import http from 'node:http';\nhttp.createServer(h).listen(4000);\n");
+      const stack = detectStack(dir);
+      expect(stack.likelyDocs).toBe(false);
+      expect(stack.nodeEvidence[0]).toMatch(/Node server code/);
+    });
+
+    it('does not flag a docs site beside a foreign-language API', () => {
+      docusaurusSite('docs');
+      write(dir, 'requirements.txt', 'fastapi\n');
+      write(dir, 'main.py', 'app = FastAPI()\n');
+      const stack = detectStack(dir);
+      expect(stack.likelyDocs).toBe(false);
+      expect(stack.setupLanguages).toContain('python');
+    });
+
+    it('does not flag a small library with a README and a changelog', () => {
+      write(dir, 'package.json', pkg({}, { main: 'index.js' }));
+      write(dir, 'index.js', 'export const x = 1;\n');
+      write(dir, 'README.md', '# lib\n');
+      write(dir, 'CHANGELOG.md', '# changes\n');
+      const stack = detectStack(dir);
+      expect(stack.likelyDocs).toBe(false);
+      expect(stack.docsEvidence).toEqual([]);
+    });
+
+    it('spots a VitePress site by its dot directory', () => {
+      write(dir, 'package.json', pkg({}, { devDependencies: { vitepress: '^1' } }));
+      write(dir, 'docs/.vitepress/config.ts', 'export default {}\n');
+      write(dir, 'docs/index.md', '# Home\n');
+      const stack = detectStack(dir);
+      expect(stack.likelyDocs).toBe(true);
+      expect(stack.docsEvidence).toContain('vitepress in package.json');
+      expect(stack.docsEvidence).toContain(path.join('docs', '.vitepress') + '/');
+    });
+
+    // APIs that declare no server dep we recognize, which the first cut of
+    // this check stopped as docs sites. Each one carries a docs-ish signal
+    // on purpose: spec tooling, or a docs/ folder bigger than the code.
+    function markdownPages(at, n = 12) {
+      for (let i = 0; i < n; i++) write(dir, `${at}/p${i}.md`, `# P${i}\n`);
+    }
+
+    it('does not count spec tooling such as rdme or Redocly as a docs site', () => {
+      // `rdme` is how a ReadMe customer pushes the API repo's spec to their
+      // docs, so it shows up in API repos at least as often as docs repos.
+      write(dir, 'package.json', pkg({ '@aws-sdk/client-dynamodb': '^3' }, {
+        devDependencies: { rdme: '^9', '@redocly/cli': '^1' },
+      }));
+      write(dir, 'redocly.yaml', 'apis: {}\n');
+      write(dir, 'src/pets.js', 'export const handler = async () => ({ statusCode: 200 });\n');
+      const stack = detectStack(dir);
+      expect(stack.docsEvidence).toEqual([]);
+      expect(stack.likelyDocs).toBe(false);
+    });
+
+    it('still flags a Markdown docs repo that syncs with rdme', () => {
+      write(dir, 'package.json', pkg({}, { devDependencies: { rdme: '^9' } }));
+      markdownPages('docs', 15);
+      const stack = detectStack(dir);
+      expect(stack.likelyDocs).toBe(true);
+      expect(stack.docsEvidence).toEqual(['15 Markdown pages, 0 source files']);
+    });
+
+    it('does not flag hosted-function APIs that keep a docs/ folder', () => {
+      const cases = [
+        { deps: { 'firebase-functions': '^5' }, handler: "exports.pets = onRequest((req, res) => res.json([]));\n" },
+        { deps: { '@middy/core': '^5' }, handler: 'export const handler = async () => ({ statusCode: 200 });\n' },
+        { deps: {}, dev: { serverless: '^3' }, handler: 'export const handler = async () => ({});\n' },
+        { deps: {}, dev: { '@vercel/node': '^3' }, handler: 'export default (req, res) => res.json([]);\n' },
+      ];
+      for (const { deps, dev, handler } of cases) {
+        write(dir, 'package.json', pkg(deps, dev ? { devDependencies: dev } : {}));
+        write(dir, 'functions/index.js', handler);
+        markdownPages('docs');
+        expect(detectStack(dir).likelyDocs, JSON.stringify({ deps, dev })).toBe(false);
+        fs.rmSync(dir, { recursive: true, force: true });
+        dir = tmp();
+      }
+    });
+
+    it('does not flag a functions API whose only signal is its deploy config', () => {
+      write(dir, 'package.json', pkg({}));
+      write(dir, 'serverless.yml', 'functions:\n  pets:\n    handler: handler.pets\n');
+      write(dir, 'handler.js', 'module.exports.pets = async () => ({ statusCode: 200 });\n');
+      markdownPages('docs');
+      expect(detectStack(dir).likelyDocs).toBe(false);
+    });
+
+    it('does not route a Python serverless repo to the JavaScript scanner', () => {
+      // The Serverless Framework deploys Python too. Its dep vetoes the docs
+      // verdict but is not Node evidence.
+      write(dir, 'package.json', pkg({}, { devDependencies: { serverless: '^3' } }));
+      write(dir, 'requirements.txt', 'boto3\n');
+      write(dir, 'handler.py', 'def pets(event, context):\n    return {"statusCode": 200}\n');
+      const stack = detectStack(dir);
+      expect(stack.nodeEvidence).toEqual([]);
+      expect(stack.setupLanguages).toEqual(['python']);
     });
   });
 

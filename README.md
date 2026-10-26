@@ -34,6 +34,18 @@ and scan anyway:
 RESTLESS_SKIP_STACK_CHECK=1 npx restless init
 ```
 
+The same check notices a documentation site. A repo whose `package.json`
+installs Docusaurus, VitePress, Mintlify or another docs generator, with
+Markdown pages and nothing that serves HTTP, is the repo for your docs, not
+your API, and setup says so instead of hunting for endpoints in it: a coding
+agent is told to ask you where the API lives, and the interactive flow asks
+whether to scan anyway. A docs site that also serves an API (Next.js API
+routes, Astro endpoints, an Express server in the same repo) counts as an
+API and is never stopped, and so does a repo that deploys serverless
+functions (Serverless Framework, Firebase, Vercel, Netlify, Cloudflare
+Workers). Spec tooling such as `rdme` or `@redocly/cli` is not treated as a
+sign of a docs site. The same escape hatch applies if it misjudges yours.
+
 # What lands in your project
 
  - `.restless/` - your API's OpenAPI spec plus the settings the SDK reads at
