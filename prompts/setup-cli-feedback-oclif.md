@@ -1,6 +1,6 @@
 ## Task: add a `feedback` command to an oclif CLI
 
-The CLI `{{cliName}}` (run as `{{bin}}`) lives in `{{cliDir}}`. It's built on oclif. Add the `feedback` command to it with the `{{oclifPackage}}` plugin, so its users, and the coding agents driving it, can send a note to the API's maintainers. Notes go to the Restless project `{{project}}`.
+The CLI `{{cliName}}` (run as `{{bin}}`) lives in `{{cliDir}}`. It's built on oclif. Add the `feedback` command to it by registering the `{{sdkPackage}}` package as an oclif plugin, so its users, and the coding agents driving it, can send a note to the API's maintainers. Notes go to the Restless project `{{project}}`.
 
 {{installNote}}
 
@@ -14,14 +14,14 @@ The CLI `{{cliName}}` (run as `{{bin}}`) lives in `{{cliDir}}`. It's built on oc
 
 In `{{cliDir}}/package.json`:
 
-- Add `"{{oclifPackage}}"` to the `oclif.plugins` array. If `oclif` has no `plugins` array, create one. Keep every existing entry, in its existing order.
-- Add a top-level `restless` block naming the project:
+- Add `"{{sdkPackage}}"` to the `oclif.plugins` array. If `oclif` has no `plugins` array, create one. Keep every existing entry, in its existing order.
+- Add a top-level `restless` block naming the project and the plugin commands this CLI opts into:
 
   ```json
-  "restless": { "project": "{{project}}" }
+  "restless": { "project": "{{project}}", "commands": ["feedback"] }
   ```
 
-  If a `restless` block already exists, set its `project` to `{{project}}` and keep any other keys in it.
+  If a `restless` block already exists, set its `project` to `{{project}}`, add `"feedback"` to its `commands` list if the list exists and lacks it, and keep every other key and entry. The plugin adds only the commands named in `commands`.
 
 Edit the JSON in place, keeping the file's existing indentation. Make sure it still parses (`node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"`).
 

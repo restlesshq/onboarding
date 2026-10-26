@@ -280,11 +280,13 @@ Go, Python, Rust or Ruby one; in a monorepo it asks which, or takes
 the notes belong to (`--project <slug>` skips the question), then shows what it
 will do and asks before changing anything:
 
-- **oclif CLIs** get [`@restlessai/oclif-plugin-feedback`](https://www.npmjs.com/package/@restlessai/oclif-plugin-feedback),
-  registered in `oclif.plugins` with a `restless` block naming your project.
-- **Any other Node CLI** gets [`@restlessai/cli-feedback`](https://www.npmjs.com/package/@restlessai/cli-feedback),
-  and your local AI adds a `feedback` command that follows your CLI's own
-  conventions for commands, flags, help and exit codes.
+- **oclif CLIs** get [`@restlessai/cli-sdk`](https://www.npmjs.com/package/@restlessai/cli-sdk)
+  registered as an oclif plugin, with a `restless` block naming your project and
+  the plugin commands your CLI opts into (`"commands": ["feedback"]`), so a later
+  upgrade never adds a command you didn't ask for.
+- **Any other Node CLI** gets the same package, and your local AI adds a
+  `feedback` command built on it that follows your CLI's own conventions for
+  commands, flags, help and exit codes.
 - **Go, Python, Rust and Ruby CLIs** have no package to install: your local AI
   writes a `feedback` command in your CLI's language that posts the note straight
   to `https://<project>.restlessdocs.com/feedback`, using the HTTP client your

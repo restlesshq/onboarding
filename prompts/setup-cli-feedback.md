@@ -1,12 +1,12 @@
 ## Task: add a `feedback` command to a Node CLI
 
-The CLI `{{cliName}}` (run as `{{bin}}`) lives in `{{cliDir}}`. It doesn't use oclif. Add a `feedback` command to it, built on the `{{corePackage}}` package, so its users, and the coding agents driving it, can send a note to the API's maintainers. Notes go to the Restless project `{{project}}`.
+The CLI `{{cliName}}` (run as `{{bin}}`) lives in `{{cliDir}}`. It doesn't use oclif. Add a `feedback` command to it, built on the `{{sdkPackage}}` package, so its users, and the coding agents driving it, can send a note to the API's maintainers. Notes go to the Restless project `{{project}}`.
 
 {{installNote}}
 
 ### Rules
 
-- **Never read `.env*` files, or anything inside `node_modules/`.** Everything you need about `{{corePackage}}` is on this page.
+- **Never read `.env*` files, or anything inside `node_modules/`.** Everything you need about `{{sdkPackage}}` is on this page.
 - The command must feel like every other command in this CLI. Copy its patterns; don't introduce a new framework, prompt library or output style.
 - Send nothing the user didn't type: no environment variables, file contents, command history or machine identifiers.
 - Don't add a write key, an API key or any other secret. The package needs only the project slug.
@@ -17,13 +17,13 @@ The CLI `{{cliName}}` (run as `{{bin}}`) lives in `{{cliDir}}`. It doesn't use o
 Before changing anything, find:
 
 - **How commands are registered**: where a command name maps to its handler, how flags are parsed, how help text is generated, and how other commands print output, print errors and set exit codes.
-- **The module system.** `{{corePackage}}` is ESM only. In an ESM CLI, use a static `import`. In a CommonJS CLI, load it with `await import('{{corePackage}}')` inside the handler. Don't convert the CLI to ESM.
+- **The module system.** `{{sdkPackage}}` is ESM only. In an ESM CLI, use a static `import`. In a CommonJS CLI, load it with `await import('{{sdkPackage}}')` inside the handler. Don't convert the CLI to ESM.
 - **The Node version floor** (`engines` in `package.json`). The package needs Node 18 or later. If the CLI supports older versions, stop and say so rather than raising the floor.
 
 ### 2. The API
 
 ```js
-import { submitFeedback } from '{{corePackage}}';
+import { submitFeedback } from '{{sdkPackage}}';
 
 const result = await submitFeedback({
   // Keep the slug as a constant in the CLI's source.

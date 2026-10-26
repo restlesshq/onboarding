@@ -4,8 +4,7 @@ import os from 'os';
 import path from 'path';
 
 import {
-  CORE_PACKAGE,
-  OCLIF_PACKAGE,
+  SDK_PACKAGE,
   describeCli,
   describeNativeCli,
   detectPackageManager,
@@ -121,21 +120,16 @@ describe('detectPackageManager', () => {
 });
 
 describe('install specs', () => {
-  it('installs one package per path by default', () => {
-    expect(packageSpecs(true, {})).toEqual([OCLIF_PACKAGE]);
-    expect(packageSpecs(false, {})).toEqual([CORE_PACKAGE]);
+  it('installs the one SDK package by default', () => {
+    expect(packageSpecs({})).toEqual([SDK_PACKAGE]);
     expect(installArgs('npm', ['a'])).toEqual(['npm', ['install', 'a']]);
     expect(installArgs('pnpm', ['a'])).toEqual(['pnpm', ['add', 'a']]);
   });
 
-  it('maps both packages to local tarballs when pointed at a pack directory', () => {
-    write('packs/restlessai-cli-feedback-0.1.0.tgz', '');
-    write('packs/restlessai-oclif-plugin-feedback-0.1.0.tgz', '');
-    const specs = packageSpecs(true, { RESTLESS_FEEDBACK_TARBALLS: path.join(root, 'packs') });
-    expect(specs.map((s) => path.basename(s))).toEqual([
-      'restlessai-oclif-plugin-feedback-0.1.0.tgz',
-      'restlessai-cli-feedback-0.1.0.tgz',
-    ]);
+  it('maps the package to a local tarball when pointed at a pack directory', () => {
+    write('packs/restlessai-cli-sdk-0.1.0.tgz', '');
+    const specs = packageSpecs({ RESTLESS_FEEDBACK_TARBALLS: path.join(root, 'packs') });
+    expect(specs.map((s) => path.basename(s))).toEqual(['restlessai-cli-sdk-0.1.0.tgz']);
   });
 });
 
@@ -149,18 +143,26 @@ describe('feedbackStatus', () => {
     expect(feedbackStatus(oclifCli()).state).toBe('none');
     expect(
       feedbackStatus(oclifCli({
-        dependencies: { '@oclif/core': '^4', [OCLIF_PACKAGE]: '^0.1.0' },
-        oclif: { plugins: [OCLIF_PACKAGE] },
+        dependencies: { '@oclif/core': '^4', [SDK_PACKAGE]: '^0.1.0' },
+        oclif: { plugins: [SDK_PACKAGE] },
         restless: { project: 'pets' },
       })),
     ).toEqual({ state: 'wired', project: 'pets' });
     expect(
-      feedbackStatus(oclifCli({ dependencies: { '@oclif/core': '^4', [OCLIF_PACKAGE]: '^0.1.0' } })).state,
+      feedbackStatus(oclifCli({ dependencies: { '@oclif/core': '^4', [SDK_PACKAGE]: '^0.1.0' } })).state,
+    ).toBe('partial');
+    // Registered, but with feedback left out of an explicit commands list: not wired.
+    expect(
+      feedbackStatus(oclifCli({
+        dependencies: { '@oclif/core': '^4', [SDK_PACKAGE]: '^0.1.0' },
+        oclif: { plugins: [SDK_PACKAGE] },
+        restless: { project: 'pets', commands: [] },
+      })).state,
     ).toBe('partial');
   });
 
   it('manual: wired when the core is a dependency and the source calls it', () => {
-    write('package.json', { name: 'petcli', bin: 'run.js', dependencies: { [CORE_PACKAGE]: '^0.1.0' } });
+    write('package.json', { name: 'petcli', bin: 'run.js', dependencies: { [SDK_PACKAGE]: '^0.1.0' } });
     expect(feedbackStatus(describeCli(root)).state).toBe('partial');
     write('src/commands/feedback.js', "const r = await submitFeedback({ project: 'pets' });\n");
     expect(feedbackStatus(describeCli(root)).state).toBe('wired');

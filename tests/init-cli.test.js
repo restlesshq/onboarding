@@ -7,7 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { buildSetupPrompt, installCommandText, isInitCli, parseInitCliArgs } from '../steps/init-cli.js';
-import { CORE_PACKAGE, OCLIF_PACKAGE } from '../lib/cli-target.js';
+import { SDK_PACKAGE } from '../lib/cli-target.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(here, '..', 'bin', 'restless.js');
@@ -31,8 +31,8 @@ describe('argument handling', () => {
   });
 
   it('spells the install command per package manager', () => {
-    expect(installCommandText('npm', [OCLIF_PACKAGE])).toBe(`npm install ${OCLIF_PACKAGE}`);
-    expect(installCommandText('pnpm', [CORE_PACKAGE])).toBe(`pnpm add ${CORE_PACKAGE}`);
+    expect(installCommandText('npm', [SDK_PACKAGE])).toBe(`npm install ${SDK_PACKAGE}`);
+    expect(installCommandText('pnpm', [SDK_PACKAGE])).toBe(`pnpm add ${SDK_PACKAGE}`);
   });
 });
 
@@ -60,9 +60,11 @@ describe('buildSetupPrompt', () => {
   });
 
   it('names the plugin for oclif and the core package otherwise', () => {
-    expect(buildSetupPrompt({ cli: cli(true), project: 'pets', installNote: '' })).toContain(`"restless": { "project": "pets" }`);
+    const oclif = buildSetupPrompt({ cli: cli(true), project: 'pets', installNote: '' });
+    expect(oclif).toContain(`"restless": { "project": "pets", "commands": ["feedback"] }`);
+    expect(oclif).toContain(`Add \`"${SDK_PACKAGE}"\` to the \`oclif.plugins\` array`);
     const manual = buildSetupPrompt({ cli: cli(false), project: 'pets', installNote: '' });
-    expect(manual).toContain(`import { submitFeedback } from '${CORE_PACKAGE}'`);
+    expect(manual).toContain(`import { submitFeedback } from '${SDK_PACKAGE}'`);
     expect(manual).toContain("project: 'pets'");
   });
 });
@@ -168,8 +170,8 @@ describe('the command, end to end', () => {
     writeRepo('package.json', {
       name: 'petcli',
       bin: { pets: 'bin/run.js' },
-      dependencies: { '@oclif/core': '^4', [OCLIF_PACKAGE]: '^0.1.0' },
-      oclif: { plugins: [OCLIF_PACKAGE] },
+      dependencies: { '@oclif/core': '^4', [SDK_PACKAGE]: '^0.1.0' },
+      oclif: { plugins: [SDK_PACKAGE] },
       restless: { project: 'pets' },
     });
     const res = await run([]);
@@ -184,8 +186,8 @@ describe('the command, end to end', () => {
     const res = await run(['--project', 'pets']);
     expect(res.status).toBe(0);
     expect(res.out).toContain('# Add a `feedback` command to petcli, for Claude Code');
-    expect(res.out).toContain(`npm install ${OCLIF_PACKAGE}`);
-    expect(res.out).toContain('"restless": { "project": "pets" }');
+    expect(res.out).toContain(`npm install ${SDK_PACKAGE}`);
+    expect(res.out).toContain('"restless": { "project": "pets", "commands": ["feedback"] }');
     expect(fs.readFileSync(path.join(repo, 'package.json'), 'utf8')).toBe(before);
   });
 

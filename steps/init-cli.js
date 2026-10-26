@@ -10,8 +10,7 @@ import { isInteractive, isAgent, detectAgent, agentLabel } from '../lib/env.js';
 import { claudeSignedOut } from '../lib/claude-auth.js';
 import { signIn, pickProject, clearAccountToken, reportSignInFailure } from '../lib/context-auth.js';
 import {
-  CORE_PACKAGE,
-  OCLIF_PACKAGE,
+  SDK_PACKAGE,
   describeCli,
   describeNativeCli,
   detectPackageManager,
@@ -110,8 +109,7 @@ export function buildSetupPrompt({ cli, project, installNote }) {
     cliDir: cli.dir,
     bin: cli.bins[0],
     project,
-    corePackage: CORE_PACKAGE,
-    oclifPackage: OCLIF_PACKAGE,
+    sdkPackage: SDK_PACKAGE,
     installNote,
   };
   return loadPrompt(cli.oclif ? 'setup-cli-feedback-oclif' : 'setup-cli-feedback', vars);
@@ -285,7 +283,7 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
   const manager = cli.native ? null : detectPackageManager(cli.dir, rootDir);
   let specs = [];
   try {
-    if (!cli.native) specs = packageSpecs(cli.oclif);
+    if (!cli.native) specs = packageSpecs();
   } catch (err) {
     return fail('sdk-install-failed', err.message);
   }
@@ -334,14 +332,14 @@ export async function runInitCli({ argv = process.argv, cwd = process.cwd(), dep
   const before = gitStatus(rootDir);
   if (!cli.native) {
     const [cmd, cmdArgs] = installArgs(manager, specs);
-    const installSpinner = startSpinner(`Installing ${cli.oclif ? OCLIF_PACKAGE : CORE_PACKAGE}`);
+    const installSpinner = startSpinner(`Installing ${SDK_PACKAGE}`);
     const installed = spawnSync(cmd, cmdArgs, { cwd: cli.dir, encoding: 'utf8', shell: process.platform === 'win32' });
     installSpinner.stop();
     if (installed.status !== 0) {
       const tail = `${installed.stderr || ''}${installed.error ? installed.error.message : ''}`.trim().split('\n').slice(-6);
       return fail('sdk-install-failed', `${installText} failed.`, tail);
     }
-    console.log(green(`  ✓ Installed ${cli.oclif ? OCLIF_PACKAGE : CORE_PACKAGE}`));
+    console.log(green(`  ✓ Installed ${SDK_PACKAGE}`));
   }
 
   const prompt = buildSetupPrompt({
