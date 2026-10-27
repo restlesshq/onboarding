@@ -118,6 +118,15 @@ describe('the payload carries only allowlisted values', () => {
     expect(JSON.stringify(payload)).not.toContain('secret-repo');
   });
 
+  it('reports `init cli` under any init alias as its own command', async () => {
+    for (const alias of ['init', 'setup', 'supercharge']) {
+      const t = await fresh({ RESTLESS_TELEMETRY_FORCE: '1' }, { argv: ['node', 'restless', alias, 'cli'] });
+      t.telemetry.init({ argv: process.argv });
+      expect(t.telemetry.buildPayload({}).command).toBe('init-cli');
+      t.restore();
+    }
+  });
+
   it('keeps allowlisted flag names and drops their values and unlisted flags', async () => {
     const t = await fresh(
       { RESTLESS_TELEMETRY_FORCE: '1' },

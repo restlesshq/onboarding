@@ -49,6 +49,7 @@ import * as timings from '../lib/timings.js';
 import * as telemetry from '../lib/telemetry.js';
 import { renderReport, renderJson, summarize } from '../lib/timings-report.js';
 import { runFeedback, FEEDBACK_FLAGS } from '../lib/feedback.js';
+import { isInitCli, runInitCli } from '../steps/init-cli.js';
 
 // Initialize debug capture FIRST, before anything else writes to stdout -
 // the stream wrappers need to be in place to record the welcome screen.
@@ -520,6 +521,7 @@ function printHelp() {
   console.log(`  ${bold('Commands')}`);
   const rows = [
     ['init', 'Set up Restless here: scan your code, install the SDK, wire it in'],
+    ['init cli', 'Add a feedback command to your own CLI, so its users can reach you'],
     ['context', 'Read this repo and teach the AI how your API is meant to be used'],
     ['debug <request-id>', 'Inspect a request, ask AI about it, or have it fixed for you'],
     ['feedback <request-id>', "Tell an API's maintainers what was confusing, missing, or broken"],
@@ -565,6 +567,17 @@ function printHelp() {
     console.log(`    ${cyan(name.padEnd(ctxWidth))}  ${dim(hint)}`);
   }
   console.log('');
+  console.log(`  ${bold('Flags for')} ${cyan('init cli')}`);
+  const initCliFlags = [
+    ['--project <slug>', 'Which project notes go to (otherwise you pick)'],
+    ['--dir <path>', 'Which CLI, in a repo that has several'],
+    ['--yes', 'Skip the confirmation'],
+  ];
+  const initCliWidth = Math.max(...initCliFlags.map(([name]) => name.length));
+  for (const [name, hint] of initCliFlags) {
+    console.log(`    ${cyan(name.padEnd(initCliWidth))}  ${dim(hint)}`);
+  }
+  console.log('');
   console.log(`  ${bold('Flags for')} ${cyan('feedback')}`);
   const feedbackWidth = Math.max(...FEEDBACK_FLAGS.map(([name]) => name.length));
   for (const [name, hint] of FEEDBACK_FLAGS) {
@@ -589,6 +602,13 @@ if (command === '--version' || command === '-v' || command === 'version') {
 } else if (!command || command === 'help' || command === '--help' || command === '-h') {
   printHelp();
   await debug.flushAndExit(0);
+} else if (isInitCli(process.argv)) {
+  // ── npx restless init cli ──────────────────────────────────────────────
+  // Ahead of the agent branch below, which would otherwise hand an agent the
+  // API-setup playbook. `init cli` has its own agent handoff.
+  setLogoSubtitle(`npx ${CLI_NAME} init cli`);
+  const code = await runInitCli({ deps: { hasClaude, hasCodex, hasCodexAuth } });
+  await debug.flushAndExit(code);
 } else if (
   (command === 'init' || command === 'setup' || command === 'supercharge') &&
   isAgent() &&
