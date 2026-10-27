@@ -1,0 +1,9 @@
+commit and push this branch
+
+---
+
+Does this repo already have a claude.md that isn't committed?
+
+---
+
+For now go with number 2, but save it as a memory that we did that
