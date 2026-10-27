@@ -96,6 +96,7 @@ export function buildSetupPrompt({ cli, project, installNote }) {
       project,
       endpoint: feedbackEndpoint(project),
       installNote,
+      language: cli.language,
       languageLabel: lang.label,
       neverRead: lang.neverRead,
       httpClient: lang.httpClient,

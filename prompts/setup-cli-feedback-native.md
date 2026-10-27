@@ -19,14 +19,14 @@ The CLI `{{cliName}}` (run as `{{bin}}`) lives in `{{cliDir}}`. It's written in 
 ```
 POST {{endpoint}}
 Content-Type: application/json
-User-Agent: {{cliName}}/<this CLI's version>
+User-Agent: {{cliName}}/<this CLI's version> restless-cli/{{language}}
 
 {"message": "...", "context": "...", "email": "...", "requestIds": ["..."]}
 ```
 
 - Keep the URL as a constant in the CLI's source. If the environment variable `RESTLESS_FEEDBACK_URL` is set and non-empty, post to that exact URL instead (it exists for local testing).
 - `message` is required. Leave out `context`, `email` and `requestIds` when they're empty. The server keeps the first 4,000 characters of the message, the first 2,000 of the context, and the first 10 request ids.
-- The `User-Agent` must START with `{{cliName}}/<version>`: the dashboard labels each note with that first token. {{versionHint}}
+- The `User-Agent` must START with `{{cliName}}/<version>`: the dashboard labels each note with that first token. It must END with the literal token `restless-cli/{{language}}`, exactly as written, which marks the note as sent by a CLI. {{versionHint}}
 - Time the request out after 10 seconds.
 
 Print exactly one line for the outcome, worded for whoever ran the command:

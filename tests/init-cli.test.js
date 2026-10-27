@@ -45,6 +45,7 @@ describe('buildSetupPrompt', () => {
       const prompt = buildSetupPrompt({ cli: native(language), project: 'pets', installNote: '' });
       expect(prompt).not.toMatch(/\{\{\w+\}\}/);
       expect(prompt).toContain('https://pets.restlessdocs.com/feedback');
+      expect(prompt).toContain(`restless-cli/${language}`);
       expect(prompt).toContain('Never read `.env*` files');
     }
   });
