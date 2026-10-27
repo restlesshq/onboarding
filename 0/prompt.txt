@@ -1,0 +1,1 @@
+I want to publish a new version of this package to npm
