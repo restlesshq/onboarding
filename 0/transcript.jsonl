@@ -1,0 +1,2 @@
+{"v":1,"agent":"claude-code","cli_version":"0.12.2","type":"user","ts":"2026-10-21T14:33:07.069Z","content":[{"id":"8938bba9-ca4d-49f4-bd37-5cb5ce8703e0","text":"Reply with the single word OK."}]}
+{"v":1,"agent":"claude-code","cli_version":"0.12.2","type":"assistant","ts":"2026-10-21T14:33:09.907Z","id":"msg_011CgFYe9Hs1QDJqN1jYqGRT","model":"claude-opus-4-7","input_tokens":6,"output_tokens":6,"cache_write_tokens":397501,"cache_write_5m_tokens":0,"cache_write_1h_tokens":397501,"content":[{"text":"OK","type":"text"}]}
