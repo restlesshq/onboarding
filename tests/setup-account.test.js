@@ -10,7 +10,8 @@ vi.mock('../lib/project-init.js', () => ({
   stageForClaim: vi.fn(async ({ setupKey }) => ({ artifacts: { oas: 'ok', endpoints: 3 }, setupKey })),
 }));
 vi.mock('../lib/settings.js', () => ({ loadSettings: () => ({ apis: [{ rootDir: '.' }] }) }));
-vi.mock('../lib/env.js', async (orig) => ({ ...(await orig()), isInteractive: () => false }));
+const env = vi.hoisted(() => ({ interactive: false }));
+vi.mock('../lib/env.js', async (orig) => ({ ...(await orig()), isInteractive: () => env.interactive }));
 
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -31,6 +32,7 @@ async function run(extra = {}) {
 
 beforeEach(() => {
   claim.calls.length = 0;
+  env.interactive = false;
   vi.unstubAllGlobals();
 });
 
@@ -60,5 +62,21 @@ describe('setupAccount claim', () => {
     expect(fetchSpy.mock.calls[0][0]).toMatch(/\/api\/auth\/start$/);
     expect(result).toEqual({ apiKey: 'rk_1' });
     expect(text).toMatch(/\/init\/[0-9a-f]{32}/);
+  });
+
+  it('stops waiting on the browser claim after the time limit, and says how to finish', async () => {
+    claim.result = { ok: false, reason: 'unreachable' };
+    env.interactive = true;
+    vi.stubGlobal('fetch', vi.fn(async (url) => new Response(
+      JSON.stringify(String(url).includes('/api/auth/check') ? { status: 'pending' } : {}),
+      { status: 200 },
+    )));
+
+    const { result, last, text } = await run({ claimWaitMs: 10 });
+
+    expect(result).toEqual({ apiKey: 'rk_1' });
+    expect(last.status).toBe('failed');
+    expect(text).toContain('Stopped waiting for the browser');
+    expect(text).toContain('npx');
   });
 });

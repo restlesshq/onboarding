@@ -20,14 +20,19 @@ function openBrowser(url) {
   } catch {}
 }
 
+// Long enough for anyone actually finishing in the browser. The claim link
+// itself never expires, so stopping here loses nothing but the terminal's wait.
+export const CLAIM_WAIT_MS = 30 * 60 * 1000;
+
 /**
  * Poll the auth-check endpoint until the user finishes logging in. If the
- * AbortSignal fires we resolve to `null` so the caller can keep racing
- * other promises without an unhandled rejection.
+ * AbortSignal fires, or `waitMs` passes, we resolve to `null` so the caller
+ * can keep racing other promises without an unhandled rejection.
  */
-async function pollForAuth(token, signal) {
+async function pollForAuth(token, signal, waitMs = CLAIM_WAIT_MS) {
   const pollUrl = `${SITE_URL}/api/auth/check?token=${token}`;
-  while (!signal?.aborted) {
+  const deadline = Date.now() + waitMs;
+  while (!signal?.aborted && Date.now() < deadline) {
     try {
       const res = await fetch(pollUrl, { signal });
       if (res.ok) {
@@ -114,6 +119,7 @@ export default async function setupAccount({
   projectId,
   setupKey,
   sessionToken = null,
+  claimWaitMs = CLAIM_WAIT_MS,
 }) {
   // ── Sub 0: Upload OpenAPI specs ─────────────────────────────────
   // Stage everything the server needs BEFORE the user logs in, so the
@@ -263,7 +269,7 @@ export default async function setupAccount({
 
   // Non-interactive (agent / CI): claiming the project is a human action -
   // it needs a browser login that no one is here to complete, and the auth
-  // poll below is unbounded, so racing it would hang forever. The OAS +
+  // poll below would hold the run for up to CLAIM_WAIT_MS for nothing. The OAS +
   // settings are already uploaded, so the project is fully staged; hand back
   // the claim URL and finish cleanly instead of blocking.
   if (!isInteractive()) {
@@ -299,7 +305,7 @@ export default async function setupAccount({
   // directly (skipping Enter), polling finishes first and we cancel the
   // prompt; if they press Enter, we open the browser and keep polling.
   const pollAbort = new AbortController();
-  const pollPromise = pollForAuth(token, pollAbort.signal);
+  const pollPromise = pollForAuth(token, pollAbort.signal, claimWaitMs);
   const enter = waitForEnter();
 
   const winner = await Promise.race([
@@ -331,6 +337,19 @@ export default async function setupAccount({
     result = winner.value;
   }
   pollAbort.abort();
+
+  // Gave up waiting. A claim can still land in the browser later; this run
+  // just can't confirm it, so it ends unfinished with the way forward.
+  if (!result) {
+    update({ sub: { 0: 'done' }, status: 'failed', message: [
+      `  ${red('✗')} Stopped waiting for the browser after ${Math.round(claimWaitMs / 60000)} minutes.`,
+      '',
+      `  ${dim('You can still finish there:')} ${dim(loginUrl)}`,
+      `  ${dim('Or get a fresh link with')} ${cyan(`npx ${CLI_NAME} login`)}${dim('.')}`,
+    ] });
+    debug.markUnfinished("we didn't see the project get claimed");
+    return { apiKey };
+  }
 
   const { email, slug } = result;
 
