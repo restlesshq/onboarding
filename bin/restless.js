@@ -1194,9 +1194,12 @@ if (command === '--version' || command === '-v' || command === 'version') {
   });
   // The user can press on past failing checks, and setup lets them, but
   // they aren't fully set up, so the run ends with a bug-report offer.
-  if (checks && !checks.ok) {
-    const failing = (checks.rows || []).filter((r) => !r.ok).map((r) => r.label).filter(Boolean);
-    debug.markUnfinished(`setup checks still failing${failing.length ? ` (${failing.join(', ')})` : ''}`);
+  // Owner identity is the exception: leaving it unset or unconfirmed is the
+  // user's call, and requests still flow, so it isn't a setup failure.
+  const failing = (checks?.rows || []).filter((r) => !r.ok && r.kind !== 'owner-id');
+  if (failing.length) {
+    const labels = failing.map((r) => r.label).filter(Boolean);
+    debug.markUnfinished(`setup checks still failing${labels.length ? ` (${labels.join(', ')})` : ''}`);
   }
   plan.makeUpdater(1)({ status: 'done', sub: { 0: 'done', 1: 'done', 2: 'done', 3: 'done' } });
 
