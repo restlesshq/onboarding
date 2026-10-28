@@ -7,6 +7,11 @@ import path from 'path';
 // Opening a browser is a side effect on the user's desktop, so it must only follow an explicit keypress.
 const calls = vi.hoisted(() => []);
 const picked = vi.hoisted(() => ({ items: null }));
+const linkable = vi.hoisted(() => ({ id: null }));
+vi.mock('../lib/telemetry.js', async (orig) => ({
+  ...(await orig()),
+  linkableAnonymousId: () => linkable.id,
+}));
 vi.mock('child_process', async (orig) => ({
   ...(await orig()),
   execSync: vi.fn((cmd) => { calls.push(`exec:${cmd.split(' ')[0]}`); }),
@@ -29,15 +34,23 @@ afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-let server, saved, projects;
+let server, saved, projects, startBody;
 beforeEach(async () => {
   calls.length = 0;
   picked.items = null;
+  linkable.id = null;
+  startBody = null;
   projects = [];
   saved = { ...process.env };
   fs.rmSync(path.join(home, '.restless'), { recursive: true, force: true });
   server = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/api/auth/cli/start')) {
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      req.on('end', () => { startBody = JSON.parse(raw); res.end('{}'); });
+      return;
+    }
     if (req.url.startsWith('/api/auth/cli/projects')) return res.end(JSON.stringify({ projects }));
     if (req.url.startsWith('/api/auth/cli/check')) {
       return res.end(JSON.stringify({ status: 'authorized', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }));
@@ -64,6 +77,13 @@ describe('signIn', () => {
     expect(calls.findIndex((c) => c.startsWith('exec:'))).toBeGreaterThan(calls.indexOf('key'));
   });
 
+  it('after the welcome screen\'s sign-in keypress, opens the browser without asking again', async () => {
+    const { signIn } = await import('../lib/context-auth.js');
+    expect(await signIn({ interactive: true, pressed: true })).toMatchObject({ ok: true, cached: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/^exec:/);
+  });
+
   it('for a coding agent, prints the link and never opens a browser', async () => {
     const { signIn } = await import('../lib/context-auth.js');
     const printed = [];
@@ -71,6 +91,19 @@ describe('signIn', () => {
     expect(await signIn({ interactive: false, linkOnly: true })).toMatchObject({ ok: true });
     expect(calls).toEqual([]);
     expect(printed.join('\n')).toContain('/api/auth/cli?token=');
+  });
+
+  it('hands over the anonymous id for linking when telemetry is sending', async () => {
+    linkable.id = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    const { signIn } = await import('../lib/context-auth.js');
+    await signIn({ interactive: true, pressed: true });
+    expect(startBody).toMatchObject({ scope: 'account', anonymousId: linkable.id });
+  });
+
+  it('sends no anonymous id when telemetry is off', async () => {
+    const { signIn } = await import('../lib/context-auth.js');
+    await signIn({ interactive: true, pressed: true });
+    expect(startBody).not.toHaveProperty('anonymousId');
   });
 
   it('with neither, refuses without starting a sign-in', async () => {

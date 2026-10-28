@@ -42,7 +42,7 @@ import { fatalError, isFatalExit } from '../lib/errors.js';
 import { claudeSignedOut } from '../lib/claude-auth.js';
 import { findSdkReferences, findOwnerIdPlaceholders, listFiles } from '../lib/grep-sdk.js';
 import contextStep from '../steps/context.js';
-import { signIn, pickProject, clearAccountToken, reportSignInFailure } from '../lib/context-auth.js';
+import { signIn, loadAccountToken, pickProject, clearAccountToken, reportSignInFailure } from '../lib/context-auth.js';
 import * as debug from '../lib/debug.js';
 import * as bugReport from '../lib/bug-report.js';
 import * as timings from '../lib/timings.js';
@@ -727,8 +727,11 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // Boxed CTA: the focal point of the welcome. The trailing ⏎ pulses while
   // we wait for input, so we hide the native blinking cursor - one cue
   // instead of two. Box, label, and ⏎ all use the brand blue so the
-  // call to action ties back to the logo.
-  const ctaText = 'Press ENTER to get started';
+  // call to action ties back to the logo. Someone already signed in from an
+  // earlier run skips the browser, so the button only promises it otherwise.
+  const ctaText = loadAccountToken()
+    ? 'Press ENTER to get started'
+    : 'Press ENTER to connect via GitHub';
   const boxBody = `  ${ctaText}  ⏎  `;
   const w = boxBody.length;
   console.log(`  ${brand('╭' + '─'.repeat(w) + '╮')}`);
@@ -794,9 +797,24 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(0);
   }
 
-  // ENTER: continue normal setup.
+  // ENTER: sign in, then continue normal setup.
   // Clear the viewport + scrollback so the welcome doesn't linger.
   clearScreen();
+  if (welcomeKey === '\r' || welcomeKey === '\n') {
+    const session = await signIn({
+      pressed: true,
+      note: [
+        'Sign in or create an account with GitHub or Google.',
+        "Come back here once you're done and we'll carry on.",
+      ],
+    });
+    if (!session.ok) {
+      reportSignInFailure(session, { retry: 'init' });
+      await debug.flushAndExit(1);
+    }
+    // The sign-in prompt has done its job; start the next screen at the top.
+    if (!session.cached) clearScreen();
+  }
   } else {
     // Non-interactive (agent / CI / pipe): skip the animated welcome and its
     // ENTER / demo / human-handoff gate entirely - there's no TTY to drive

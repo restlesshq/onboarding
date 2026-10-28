@@ -1,10 +1,12 @@
 # Telemetry
 
-`npx restless` sends anonymous usage data so we can see which commands people
-run, how often setup works, and where it goes wrong. It is on by default and
-takes one command to turn off.
+`npx restless` sends usage data so we can see which commands people run, how
+often setup works, and where it goes wrong. It is on by default and takes one
+command to turn off.
 
-Nothing it sends can identify you, your machine, or your code.
+Nothing it sends can identify your code. Until you sign in it can't identify you
+either; once you sign in to Restless from the CLI, we link this machine's usage
+data to your account (see [Linked to your account](#linked-to-your-account)).
 
 ## Turning it off
 
@@ -76,9 +78,24 @@ The two IDs are randomly generated UUIDs. The per-machine one is stored in
 MAC address, or working directory — so it counts machines without being able to
 name one. Delete that file and you become a new machine.
 
-Telemetry is not linked to your Restless account. There is no project ID in the
-payload and the endpoint is unauthenticated, so this data cannot be joined back
-to you even by us.
+## Linked to your account
+
+When you sign in to Restless from the CLI (the browser step in `init`, `context`
+and `init cli`), the CLI hands the sign-in your per-machine ID. Once you approve
+it, we record that this ID belongs to your account. From then on, the usage data
+from this machine, past runs and future ones, can be read as yours by Restless
+staff. That's how we can see where *your* setup got stuck and reach out.
+
+The payload itself doesn't change: it still carries no account ID, project ID, or
+anything from the list above. The link lives on our side, is kept as long as
+the usage data it explains (180 days from your latest sign-in), and a machine
+that more than one person signs in on is linked to each of them.
+
+With telemetry off, the CLI doesn't send the ID when you sign in, so nothing is
+linked. To start fresh on a linked machine, delete `~/.restless/config.json`:
+the next ID is a new machine nobody has signed in on. That file also holds your
+telemetry choice, so run `npx restless telemetry disable` again afterwards if
+you had it off.
 
 ## How this relates to `--debug` and sending us debugging info
 
