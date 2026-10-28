@@ -34,17 +34,29 @@ afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-let server, saved, projects, startBody;
+let server, saved, projects, startBody, claimReply, claimBody;
 beforeEach(async () => {
   calls.length = 0;
   picked.items = null;
   linkable.id = null;
   startBody = null;
+  claimBody = null;
+  claimReply = { status: 200, body: { claimed: true, project_slug: 'acme-api', user_email: 'me@acme.com' } };
   projects = [];
   saved = { ...process.env };
   fs.rmSync(path.join(home, '.restless'), { recursive: true, force: true });
   server = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/api/auth/cli/claim')) {
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      req.on('end', () => {
+        claimBody = JSON.parse(raw);
+        res.statusCode = claimReply.status;
+        res.end(JSON.stringify(claimReply.body));
+      });
+      return;
+    }
     if (req.url.startsWith('/api/auth/cli/start')) {
       let raw = '';
       req.on('data', (c) => { raw += c; });
@@ -135,5 +147,45 @@ describe('pickProject', () => {
     const { pickProject } = await import('../lib/context-auth.js');
     expect(await pickProject({ token: 't', interactive: true })).toMatchObject({ ok: true, project: { slug: 'pets' } });
     expect(picked.items).toBeNull();
+  });
+});
+
+describe('claimWithSession', () => {
+  const saveSession = async () => {
+    const { saveAccountToken } = await import('../lib/context-auth.js');
+    saveAccountToken({ token: 'sess', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), email: 'me@acme.com' });
+  };
+
+  it('claims with the cached session and the setup key', async () => {
+    await saveSession();
+    const { claimWithSession } = await import('../lib/context-auth.js');
+
+    expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk' }))
+      .toEqual({ ok: true, email: 'me@acme.com', slug: 'acme-api' });
+    expect(claimBody).toEqual({ token: 'sess', project_id: 'p1', setup_key: 'sk' });
+  });
+
+  it('without a cached session, asks the server nothing', async () => {
+    const { claimWithSession } = await import('../lib/context-auth.js');
+    expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk' })).toMatchObject({ ok: false, reason: 'no-session' });
+    expect(claimBody).toBeNull();
+  });
+
+  it('drops a session the server rejects, so the next run signs in fresh', async () => {
+    await saveSession();
+    claimReply = { status: 401, body: { error: 'session_invalid' } };
+    const { claimWithSession, loadAccountToken } = await import('../lib/context-auth.js');
+
+    expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk' })).toMatchObject({ ok: false, reason: 'session_invalid' });
+    expect(loadAccountToken()).toBeNull();
+  });
+
+  it('keeps the session when the claim fails for another reason', async () => {
+    await saveSession();
+    claimReply = { status: 409, body: { error: 'already_claimed' } };
+    const { claimWithSession, loadAccountToken } = await import('../lib/context-auth.js');
+
+    expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk' })).toMatchObject({ ok: false, reason: 'already_claimed' });
+    expect(loadAccountToken()).not.toBeNull();
   });
 });

@@ -7,6 +7,7 @@ import { loadSettings } from '../lib/settings.js';
 import { SITE_URL, CLI_NAME } from '../lib/config.js';
 import { isInteractive } from '../lib/env.js';
 import { hashWriteKey, stageForClaim } from '../lib/project-init.js';
+import { claimWithSession } from '../lib/context-auth.js';
 import * as debug from '../lib/debug.js';
 
 function openBrowser(url) {
@@ -85,6 +86,23 @@ function waitForEnter() {
 function pickApiEntry(settings, apiRootDir) {
   const key = apiRootDir || '.';
   return settings.apis.find((a) => (a.rootDir || '.') === key) || settings.apis[0];
+}
+
+/** Who has the project now and what to do next: the end of both claim paths. */
+function claimedLines({ email, slug }) {
+  return [
+    `  ${green('✓')} Logged in as ${bold(email)}.`,
+    `  ${green('✓')} Project claimed: ${cyan(`${SITE_URL}/api/${slug}`)}`,
+    '',
+    '',
+    `  ${bold('Next steps:')}`,
+    '',
+    `    Commit your changes and deploy.`,
+    // All one dim line - a cyan `.restless/` inside it would render
+    // dim-cyan, which is muddier than just leaving it gray.
+    `    ${dim('Include the .restless/ folder so your team and CI use the same config.')}`,
+    '',
+  ];
 }
 
 export default async function setupAccount({
@@ -169,6 +187,42 @@ export default async function setupAccount({
     update({ message: [`  ${dim('!')} ${artifacts.settingsError || 'Settings upload skipped.'}`] });
   }
 
+  const uploadDoneLine = hasLocalOas
+    ? `  ${green('✓')} Uploaded ${bold(oasFile)}.`
+    : null;
+
+  // A concrete recap of what the setup actually accomplished. Shown on the
+  // completion screen so the final step reads as a payoff with real numbers,
+  // not just another identical-looking intermediate step.
+  const recap = [
+    `  ${bold('Here’s what you set up:')}`,
+    `    ${green('✓')} ${endpointCount
+      ? `Mapped ${bold(String(endpointCount))} endpoint${endpointCount === 1 ? '' : 's'}`
+      : 'Mapped your API'}`,
+    `    ${green('✓')} Installed and wired the Restless SDK`,
+    hasLocalOas ? `    ${green('✓')} Uploaded ${bold(oasFile)}` : null,
+  ].filter(Boolean);
+
+  // ── Sub 1, signed in: claim with the welcome screen's session ──
+  // The person already connected their account before setup started, so the
+  // claim goes to that account directly, with no second browser trip. Any
+  // failure (expired session, server trouble) falls through to the claim link
+  // below, which is what every run did before sign-in moved up front.
+  setSpinner?.('Claiming your project');
+  const direct = await claimWithSession({ projectId, setupKey });
+  setSpinner?.('');
+  debug.log('setup-account.direct-claim', { ok: direct.ok, reason: direct.reason });
+  if (direct.ok) {
+    update({ sub: { 0: 'done', 1: 'done' }, status: 'done', message: [
+      ...celebrationBanner(`🎉  ${bold('Setup complete')}: your API is on Restless`),
+      '',
+      ...recap,
+      '',
+      ...claimedLines(direct),
+    ] });
+    return { apiKey, email: direct.email, slug: direct.slug };
+  }
+
   // ── Sub 1: Log in to claim the project ──────────────────────────
   // Hand the project + setupKey to the server up front, keyed by an
   // opaque token. The login URL we display only needs that token, so
@@ -205,22 +259,6 @@ export default async function setupAccount({
   // Short form of `/login?token=<token>`; the site redirects it there.
   // People retype this out of a terminal, so keep it as short as possible.
   const loginUrl = `${SITE_URL}/init/${token}`;
-
-  const uploadDoneLine = hasLocalOas
-    ? `  ${green('✓')} Uploaded ${bold(oasFile)}.`
-    : null;
-
-  // A concrete recap of what the setup actually accomplished. Shown on the
-  // completion screen so the final step reads as a payoff with real numbers,
-  // not just another identical-looking intermediate step.
-  const recap = [
-    `  ${bold('Here’s what you set up:')}`,
-    `    ${green('✓')} ${endpointCount
-      ? `Mapped ${bold(String(endpointCount))} endpoint${endpointCount === 1 ? '' : 's'}`
-      : 'Mapped your API'}`,
-    `    ${green('✓')} Installed and wired the Restless SDK`,
-    hasLocalOas ? `    ${green('✓')} Uploaded ${bold(oasFile)}` : null,
-  ].filter(Boolean);
 
   // Non-interactive (agent / CI): claiming the project is a human action -
   // it needs a browser login that no one is here to complete, and the auth
@@ -297,17 +335,7 @@ export default async function setupAccount({
 
   update({ sub: { 0: 'done', 1: 'done' }, status: 'done', message: [
     uploadDoneLine,
-    `  ${green('✓')} Logged in as ${bold(email)}.`,
-    `  ${green('✓')} Project claimed: ${cyan(`${SITE_URL}/api/${slug}`)}`,
-    '',
-    '',
-    `  ${bold('Next steps:')}`,
-    '',
-    `    Commit your changes and deploy.`,
-    // All one dim line - a cyan `.restless/` inside it would render
-    // dim-cyan, which is muddier than just leaving it gray.
-    `    ${dim('Include the .restless/ folder so your team and CI use the same config.')}`,
-    '',
+    ...claimedLines({ email, slug }),
     // `uploadDoneLine` is conditionally null, but the blank separators are
     // real content - filtering on truthiness dropped them and jammed this
     // whole block against the checkmarks above it.
