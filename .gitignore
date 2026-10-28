@@ -10,8 +10,6 @@ TODO.md
 # Local publish helper
 publish.sh
 
-# Agent config, kept local because this repo is public
-CLAUDE.md
-AGENTS.md
-.claude/
-.entire/agent-guide.md
+# Local Claude Code state
+.claude/worktrees/
+.claude/settings.local.json
