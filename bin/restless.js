@@ -683,6 +683,9 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // clone we chdir'd into, so the screens below can say where setup is
   // running. Null for an ordinary run in the user's own repo.
   let demoDir = null;
+  // The account the welcome screen signed in as, carried to the claim step so
+  // that is the account the project lands on, whatever else rewrote the cache.
+  let welcomeSessionToken = null;
 
   // ── Welcome screen ────────────────────────────────────────────────────
   // Clear viewport + scrollback so the welcome starts at the top of the
@@ -804,7 +807,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     const session = await signIn({
       pressed: true,
       note: [
-        'Sign in or create an account with GitHub or Google.',
+        'Connect via GitHub in your browser (Google works too).',
         "Come back here once you're done and we'll carry on.",
       ],
     });
@@ -812,6 +815,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
       reportSignInFailure(session, { retry: 'init' });
       await debug.flushAndExit(1);
     }
+    welcomeSessionToken = session.token;
     // The sign-in prompt has done its job; start the next screen at the top.
     if (!session.cached) clearScreen();
   }
@@ -1250,6 +1254,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     apiKey: ctx.apiKey,
     projectId: ctx.projectId,
     setupKey: ctx.setupKey,
+    sessionToken: welcomeSessionToken,
   });
 
   setupInProgress = false;

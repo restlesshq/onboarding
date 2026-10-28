@@ -34,13 +34,14 @@ afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-let server, saved, projects, startBody, claimReply, claimBody;
+let server, saved, projects, startBody, claimReply, claimBody, claimCalls;
 beforeEach(async () => {
   calls.length = 0;
   picked.items = null;
   linkable.id = null;
   startBody = null;
   claimBody = null;
+  claimCalls = 0;
   claimReply = { status: 200, body: { claimed: true, project_slug: 'acme-api', user_email: 'me@acme.com' } };
   projects = [];
   saved = { ...process.env };
@@ -52,8 +53,11 @@ beforeEach(async () => {
       req.on('data', (c) => { raw += c; });
       req.on('end', () => {
         claimBody = JSON.parse(raw);
-        res.statusCode = claimReply.status;
-        res.end(JSON.stringify(claimReply.body));
+        claimCalls += 1;
+        // An array is one reply per call, in order.
+        const reply = Array.isArray(claimReply) ? claimReply[claimCalls - 1] : claimReply;
+        res.statusCode = reply.status;
+        res.end(JSON.stringify(reply.body));
       });
       return;
     }
@@ -178,6 +182,44 @@ describe('claimWithSession', () => {
 
     expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk' })).toMatchObject({ ok: false, reason: 'session_invalid' });
     expect(loadAccountToken()).toBeNull();
+  });
+
+  it('claims with the token it was handed, not whatever the cache holds now', async () => {
+    await saveSession();
+    const { claimWithSession } = await import('../lib/context-auth.js');
+
+    await claimWithSession({ projectId: 'p1', setupKey: 'sk', token: 'welcome' });
+    expect(claimBody.token).toBe('welcome');
+  });
+
+  it('leaves the cache alone when a handed-in token is rejected', async () => {
+    await saveSession();
+    claimReply = { status: 401, body: { error: 'session_invalid' } };
+    const { claimWithSession, loadAccountToken } = await import('../lib/context-auth.js');
+
+    await claimWithSession({ projectId: 'p1', setupKey: 'sk', token: 'other-run' });
+    expect(loadAccountToken()?.token).toBe('sess');
+  });
+
+  it('retries once after a server error, since the first try may have claimed', async () => {
+    await saveSession();
+    claimReply = [
+      { status: 502, body: { error: 'failed' } },
+      { status: 200, body: { claimed: true, project_slug: 'acme-api', user_email: 'me@acme.com' } },
+    ];
+    const { claimWithSession } = await import('../lib/context-auth.js');
+
+    expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk' })).toMatchObject({ ok: true, slug: 'acme-api' });
+    expect(claimCalls).toBe(2);
+  });
+
+  it('does not retry a refusal', async () => {
+    await saveSession();
+    claimReply = { status: 409, body: { error: 'already_claimed' } };
+    const { claimWithSession } = await import('../lib/context-auth.js');
+
+    await claimWithSession({ projectId: 'p1', setupKey: 'sk' });
+    expect(claimCalls).toBe(1);
   });
 
   it('keeps the session when the claim fails for another reason', async () => {

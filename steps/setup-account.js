@@ -113,6 +113,7 @@ export default async function setupAccount({
   apiKey,
   projectId,
   setupKey,
+  sessionToken = null,
 }) {
   // ── Sub 0: Upload OpenAPI specs ─────────────────────────────────
   // Stage everything the server needs BEFORE the user logs in, so the
@@ -209,7 +210,7 @@ export default async function setupAccount({
   // failure (expired session, server trouble) falls through to the claim link
   // below, which is what every run did before sign-in moved up front.
   setSpinner?.('Claiming your project');
-  const direct = await claimWithSession({ projectId, setupKey });
+  const direct = await claimWithSession({ projectId, setupKey, token: sessionToken });
   setSpinner?.('');
   debug.log('setup-account.direct-claim', { ok: direct.ok, reason: direct.reason });
   if (direct.ok) {
