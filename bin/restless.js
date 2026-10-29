@@ -34,7 +34,7 @@ import { detectStack, docsRepoMessage, noCodeMessage, stackCheckDisabled, unsupp
 import { resolveOwningDir } from '../lib/install-target.js';
 import { apiDirKey, loadSettings, saveSettings, upsertApi, generatePrefix, formatRequestId, stripRequestIdPrefix } from '../lib/settings.js';
 import { findExistingEnvFile, existingRestlessKey, replaceRestlessKey } from '../steps/prepare-account.js';
-import { generateWriteKey, ensureProject, hashWriteKey, loadProjectCreds, pollForLandedLog, saveSetupEmail, stageForClaim } from '../lib/project-init.js';
+import { generateWriteKey, ensureProject, hashWriteKey, loadProjectCreds, pollForLandedLog, rememberSetupEmail, saveSetupEmail, stageForClaim } from '../lib/project-init.js';
 import { normalizeBaseUrl, parseStatus, describeDiagnosis, diagnoseFromHeaders, splitCurlIncludeOutput, fixContext } from '../lib/test-diagnosis.js';
 import { checkOasServers, guessBaseUrl, isPlausibleBaseUrl } from '../lib/base-url.js';
 import { safeWriteFileSync, safeAppendFileSync } from '../lib/pathGuard.js';
@@ -1346,7 +1346,8 @@ if (command === '--version' || command === '-v' || command === 'version') {
   const asJson = process.argv.includes('--json');
   const inline = process.argv.includes('--inline');
   const dirFlag = flagValue(process.argv, '--dir');
-  // The address the user confirmed they sign in with: the dashboard offers them the project under it.
+  // The address the user confirmed they sign in with. `login` sends it once the artifacts are staged,
+  // and from then on the dashboard offers the project to whoever signs in with it.
   const emailFlag = readFlag(process.argv, '--email');
   const setupEmail = emailFlag.value?.trim().toLowerCase();
   if (emailFlag.present && !bugReport.isValidEmail(setupEmail)) {
@@ -1411,9 +1412,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(1);
   }
   const { projectId, reused: reusedProject, recovered: recoveredProject } = result;
-  const emailSaved = setupEmail && result.setupKey && !result.claimed
-    ? await saveSetupEmail({ projectId, setupKey: result.setupKey, email: setupEmail })
-    : false;
+  const emailSaved = setupEmail ? rememberSetupEmail(projectId, setupEmail) : false;
 
   let envFile = null;
   if (!inline && replacedStaleKey) {
@@ -1465,8 +1464,8 @@ if (command === '--version' || command === '-v' || command === 'version') {
     }
     if (setupEmail) {
       console.log(emailSaved
-        ? `  ${green('✓')} Linked to ${bold(setupEmail)}: signing in with it shows this project, link or no link.`
-        : `  ${yellow('!')} Couldn't link ${bold(setupEmail)}. The claim link from ${cyan(`npx ${CLI_NAME} login`)} still works.`);
+        ? `  ${green('✓')} ${cyan(`npx ${CLI_NAME} login`)} will link this project to ${bold(setupEmail)}.`
+        : `  ${yellow('!')} Couldn't record ${bold(setupEmail)}. The claim link from ${cyan(`npx ${CLI_NAME} login`)} still works.`);
     }
     if (envIgnoredByGit === false) {
       console.log(`  ${yellow('!')} ${bold(rel)} is ${bold('not')} ignored by git - add it to ${bold('.gitignore')} before you commit.`);
@@ -1739,6 +1738,11 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(1);
   }
 
+  // Only now, with the spec and settings staged: a dashboard claim before this would land without them.
+  const emailLinked = creds.setupEmail && artifacts.oas !== 'claimed'
+    ? await saveSetupEmail({ projectId: entry.projectId, setupKey, email: creds.setupEmail })
+    : null;
+
   const token = crypto.randomBytes(16).toString('hex');
   try {
     const res = await fetch(`${SITE_URL}/api/auth/start`, {
@@ -1763,7 +1767,10 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // People retype this out of a terminal, so keep it as short as possible.
   const loginUrl = `${SITE_URL}/init/${token}`;
   if (asJson) {
-    console.log(JSON.stringify({ ok: true, loginUrl, projectId: entry.projectId, uploads: artifacts }, null, 2));
+    console.log(JSON.stringify({
+      ok: true, loginUrl, projectId: entry.projectId, uploads: artifacts,
+      ...(emailLinked !== null && { emailLinked }),
+    }, null, 2));
   } else {
     console.log('');
     if (artifacts.oas === 'uploaded') {
@@ -1780,6 +1787,9 @@ if (command === '--version' || command === '-v' || command === 'version') {
       console.log(`  ${yellow('!')} ${artifacts.error || 'OAS upload failed.'}`);
       console.log(`  ${bold('The project will claim without a spec.')} Fix the error above, then after`);
       console.log(`  claiming run ${cyan(`npx ${CLI_NAME} update`)} to push it - nothing else retries this.`);
+    }
+    if (emailLinked) {
+      console.log(`  ${green('✓')} Signing in as ${bold(creds.setupEmail)} also finds this project, link or no link.`);
     }
     console.log(`  ${bold('Open this to claim your project:')}`);
     console.log(`  ${cyan(loginUrl)}`);

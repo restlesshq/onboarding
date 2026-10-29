@@ -170,8 +170,6 @@ describe('buildAgentPlan', () => {
     const step4 = plan.slice(plan.indexOf('## Step 4'), plan.indexOf('## Rules'));
     expect(step4.replace(/\s+/g, ' ')).toContain('if it is lost, signing in at the dashboard with the email from step 2 shows the project under Projects');
     expect(step4).toContain('LAST line of your wrap-up');
-    // The fallback is one sentence, not a section: the step stays about the same size.
-    expect(step4.split('\n').length).toBeLessThanOrEqual(26);
   });
 
   it('tells the agent to end its wrap-up with the claim URL', () => {

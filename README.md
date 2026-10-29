@@ -107,8 +107,9 @@ transcript; `--inline` prints it on stdout instead, but only for humans - under
 a coding agent it refuses. It also reports whether git ignores that env file
 (`envIgnoredByGit`), so the key can't slip into a commit unnoticed.
 
-`--email` links the unclaimed project to the address you sign in with. The
-claim link from `npx restless login` is still the way in, but if you lose it,
+`--email` records the address you sign in with, and `npx restless login` links
+the unclaimed project to it once the spec and settings are uploaded. The claim
+link `login` prints is still the way in, but if you lose it,
 signing in to the dashboard with that email shows the project under Projects,
 waiting for one click to add it. Your agent asks for the email and reads it
 back before using it, since a typo would offer the project to someone else.
