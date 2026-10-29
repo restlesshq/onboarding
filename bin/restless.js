@@ -1739,10 +1739,12 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(1);
   }
 
-  // Only now, with the spec and settings staged: a dashboard claim before this would land without them.
-  const emailLinked = creds.setupEmail && artifacts.oas !== 'claimed'
-    ? await saveSetupEmail({ projectId: entry.projectId, setupKey, email: creds.setupEmail })
-    : null;
+  // Only once staging fully succeeded: after a claim the server refuses staged uploads, so linking
+  // early or after a failed upload lets the dashboard claim a project without its spec or settings.
+  const stagingFailed = artifacts.oas === 'failed' || artifacts.settings === 'failed';
+  const emailLinked = !creds.setupEmail || artifacts.oas === 'claimed' ? null
+    : stagingFailed ? false
+    : await saveSetupEmail({ projectId: entry.projectId, setupKey, email: creds.setupEmail });
 
   const token = crypto.randomBytes(16).toString('hex');
   try {
@@ -1791,6 +1793,8 @@ if (command === '--version' || command === '-v' || command === 'version') {
     }
     if (emailLinked) {
       console.log(`  ${green('✓')} Signing in as ${bold(creds.setupEmail)} also finds this project, link or no link.`);
+    } else if (emailLinked === false && stagingFailed) {
+      console.log(`  ${yellow('!')} Not linking ${bold(creds.setupEmail)} until the upload succeeds. Re-run ${cyan(`npx ${CLI_NAME} login`)} after fixing it.`);
     }
     console.log(`  ${bold('Open this to claim your project:')}`);
     console.log(`  ${cyan(loginUrl)}`);

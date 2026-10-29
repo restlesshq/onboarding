@@ -17,7 +17,7 @@ const SPEC = JSON.stringify({
 });
 
 describe('key --email, then login', () => {
-  let tmp, home, repo, server, siteUrl, calls, oasStatus, initStatus;
+  let tmp, home, repo, server, siteUrl, calls, oasStatus, initStatus, failing;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'key-email-'));
@@ -33,6 +33,7 @@ describe('key --email, then login', () => {
     calls = [];
     oasStatus = 201;
     initStatus = 201;
+    failing = null;
     server = http.createServer((req, res) => {
       let body = '';
       req.on('data', (d) => { body += d; });
@@ -45,6 +46,7 @@ describe('key --email, then login', () => {
           return res.end(JSON.stringify({ project_id: 'p1', setup_key: 'sk1' }));
         }
         if (route === 'oas') res.statusCode = oasStatus;
+        if (route === failing) res.statusCode = 500;
         res.end('{}');
       });
     });
@@ -103,6 +105,19 @@ describe('key --email, then login', () => {
       status: 'done',
       email: 'dev@example.com',
     });
+  });
+
+  it.each([
+    ['the spec', 'oas'],
+    ['the settings', 'settings'],
+  ])('holds the email back when uploading %s fails', async (_label, route) => {
+    await run(['key', '--email', 'dev@example.com']);
+    failing = route;
+
+    const login = await run(['login']);
+    expect(login.status).toBe(0);
+    expect(login.json.emailLinked).toBe(false);
+    expect(calls.map((c) => c.route)).not.toContain('setup-progress');
   });
 
   it('records nothing at key time for a project that is already claimed', async () => {
