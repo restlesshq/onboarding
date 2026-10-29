@@ -13,7 +13,7 @@ import { resolveProjectDirs, findGitRoot, isGitIgnored } from '../lib/project.js
 import { countOperations } from '../lib/oas-parse.js';
 import { readSpecForUpload } from '../lib/oas-bundle.js';
 import { setGitRoot } from '../lib/pathGuard.js';
-import { flagValue, positionalArg } from '../lib/args.js';
+import { flagValue, positionalArg, readFlag } from '../lib/args.js';
 import generateOas from '../steps/generate-oas.js';
 import prepareAccount from '../steps/prepare-account.js';
 import installSdk from '../steps/install-sdk.js';
@@ -34,7 +34,7 @@ import { detectStack, docsRepoMessage, noCodeMessage, stackCheckDisabled, unsupp
 import { resolveOwningDir } from '../lib/install-target.js';
 import { apiDirKey, loadSettings, saveSettings, upsertApi, generatePrefix, formatRequestId, stripRequestIdPrefix } from '../lib/settings.js';
 import { findExistingEnvFile, existingRestlessKey, replaceRestlessKey } from '../steps/prepare-account.js';
-import { generateWriteKey, ensureProject, hashWriteKey, loadProjectCreds, pollForLandedLog, stageForClaim } from '../lib/project-init.js';
+import { generateWriteKey, ensureProject, hashWriteKey, loadProjectCreds, pollForLandedLog, rememberSetupEmail, saveSetupEmail, stageForClaim } from '../lib/project-init.js';
 import { normalizeBaseUrl, parseStatus, describeDiagnosis, diagnoseFromHeaders, splitCurlIncludeOutput, fixContext } from '../lib/test-diagnosis.js';
 import { checkOasServers, guessBaseUrl, isPlausibleBaseUrl } from '../lib/base-url.js';
 import { safeWriteFileSync, safeAppendFileSync } from '../lib/pathGuard.js';
@@ -542,7 +542,7 @@ function printHelp() {
   console.log(`  ${bold('For coding agents')}`);
   const agentRows = [
     ['guide [oas|sdk]', 'Print the instructions for writing the spec / wiring the SDK'],
-    ['key', 'Register the project and put RESTLESS_KEY in .env'],
+    ['key [--email <e>]', 'Register the project and put RESTLESS_KEY in .env'],
     ['register --oas <f>', 'Record a spec in .restless/settings.json'],
     ['verify --url <u>', 'Send one request, confirm the SDK saw it and the log landed'],
     ['login', 'Print the URL the user opens to claim the project'],
@@ -1339,13 +1339,24 @@ if (command === '--version' || command === '-v' || command === 'version') {
   await debug.flushAndExit(0);
 
 } else if (command === 'key') {
-  // ── npx restless key [--json] [--inline] [--dir <apiRootDir>] ──────────
+  // ── npx restless key [--json] [--inline] [--dir <apiRootDir>] [--email <e>] ─
   // Mint + register a project and put the key where the SDK will find it.
   // Ours to own: it generates a credential and registers it server-side,
   // which is not something a calling agent should improvise.
   const asJson = process.argv.includes('--json');
   const inline = process.argv.includes('--inline');
   const dirFlag = flagValue(process.argv, '--dir');
+  // The address the user confirmed they sign in with. `login` sends it once the artifacts are staged,
+  // and from then on the dashboard offers the project to whoever signs in with it.
+  const emailFlag = readFlag(process.argv, '--email');
+  const setupEmail = emailFlag.value?.trim().toLowerCase();
+  if (emailFlag.present && !bugReport.isValidEmail(setupEmail)) {
+    const msg = `--email needs the address the user signs in to Restless with${emailFlag.value ? `, not "${emailFlag.value}"` : ''}.`;
+    if (asJson) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
+    else console.log(red(`\n  ✗ ${msg}\n`));
+    debug.skipReport('key: invalid --email');
+    await debug.flushAndExit(1);
+  }
 
   // --inline exists so a HUMAN can place the key themselves. An agent has
   // no use for the plaintext (the key goes into .env and the SDK reads it
@@ -1401,6 +1412,8 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(1);
   }
   const { projectId, reused: reusedProject, recovered: recoveredProject } = result;
+  // A claimed project has its owner already, so there is nothing for `login` to link.
+  const emailSaved = setupEmail && !result.claimed ? rememberSetupEmail(projectId, setupEmail) : false;
 
   let envFile = null;
   if (!inline && replacedStaleKey) {
@@ -1426,6 +1439,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
       reusedProject: !!reusedProject,
       ...(recoveredProject && { recoveredProject: true }),
       ...(replacedStaleKey && { replacedStaleKey: true }),
+      ...(setupEmail && { emailSaved }),
     };
     // The plaintext key reaches stdout only when --inline asked for exactly
     // that. In the default flow it's already in .env; echoing it again would
@@ -1448,6 +1462,11 @@ if (command === '--version' || command === '-v' || command === 'version') {
       console.log(`  ${green('✓')} ${keyLine} ${bold(rel)}.`);
     } else {
       console.log(`  ${bold('RESTLESS_KEY')}=${apiKey}`);
+    }
+    if (setupEmail && !result.claimed) {
+      console.log(emailSaved
+        ? `  ${green('✓')} ${cyan(`npx ${CLI_NAME} login`)} will link this project to ${bold(setupEmail)}.`
+        : `  ${yellow('!')} Couldn't record ${bold(setupEmail)}. The claim link from ${cyan(`npx ${CLI_NAME} login`)} still works.`);
     }
     if (envIgnoredByGit === false) {
       console.log(`  ${yellow('!')} ${bold(rel)} is ${bold('not')} ignored by git - add it to ${bold('.gitignore')} before you commit.`);
@@ -1720,6 +1739,13 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(1);
   }
 
+  // Only once staging fully succeeded: after a claim the server refuses staged uploads, so linking
+  // early or after a failed upload lets the dashboard claim a project without its spec or settings.
+  const stagingFailed = artifacts.oas === 'failed' || artifacts.settings === 'failed';
+  const emailLinked = !creds.setupEmail || artifacts.oas === 'claimed' ? null
+    : stagingFailed ? false
+    : await saveSetupEmail({ projectId: entry.projectId, setupKey, email: creds.setupEmail });
+
   const token = crypto.randomBytes(16).toString('hex');
   try {
     const res = await fetch(`${SITE_URL}/api/auth/start`, {
@@ -1744,7 +1770,10 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // People retype this out of a terminal, so keep it as short as possible.
   const loginUrl = `${SITE_URL}/init/${token}`;
   if (asJson) {
-    console.log(JSON.stringify({ ok: true, loginUrl, projectId: entry.projectId, uploads: artifacts }, null, 2));
+    console.log(JSON.stringify({
+      ok: true, loginUrl, projectId: entry.projectId, uploads: artifacts,
+      ...(emailLinked !== null && { emailLinked }),
+    }, null, 2));
   } else {
     console.log('');
     if (artifacts.oas === 'uploaded') {
@@ -1761,6 +1790,11 @@ if (command === '--version' || command === '-v' || command === 'version') {
       console.log(`  ${yellow('!')} ${artifacts.error || 'OAS upload failed.'}`);
       console.log(`  ${bold('The project will claim without a spec.')} Fix the error above, then after`);
       console.log(`  claiming run ${cyan(`npx ${CLI_NAME} update`)} to push it - nothing else retries this.`);
+    }
+    if (emailLinked) {
+      console.log(`  ${green('✓')} Signing in as ${bold(creds.setupEmail)} also finds this project, link or no link.`);
+    } else if (emailLinked === false && stagingFailed) {
+      console.log(`  ${yellow('!')} Not linking ${bold(creds.setupEmail)} until the upload succeeds. Re-run ${cyan(`npx ${CLI_NAME} login`)} after fixing it.`);
     }
     console.log(`  ${bold('Open this to claim your project:')}`);
     console.log(`  ${cyan(loginUrl)}`);
