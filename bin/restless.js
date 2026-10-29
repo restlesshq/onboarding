@@ -42,7 +42,7 @@ import { fatalError, isFatalExit } from '../lib/errors.js';
 import { claudeSignedOut } from '../lib/claude-auth.js';
 import { findSdkReferences, findOwnerIdPlaceholders, listFiles } from '../lib/grep-sdk.js';
 import contextStep from '../steps/context.js';
-import { signIn, pickProject, clearAccountToken, reportSignInFailure } from '../lib/context-auth.js';
+import { signIn, loadAccountToken, pickProject, clearAccountToken, reportSignInFailure } from '../lib/context-auth.js';
 import * as debug from '../lib/debug.js';
 import * as bugReport from '../lib/bug-report.js';
 import * as timings from '../lib/timings.js';
@@ -683,6 +683,9 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // clone we chdir'd into, so the screens below can say where setup is
   // running. Null for an ordinary run in the user's own repo.
   let demoDir = null;
+  // The account the welcome screen signed in as, carried to the claim step so
+  // that is the account the project lands on, whatever else rewrote the cache.
+  let welcomeSessionToken = null;
 
   // ── Welcome screen ────────────────────────────────────────────────────
   // Clear viewport + scrollback so the welcome starts at the top of the
@@ -727,8 +730,11 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // Boxed CTA: the focal point of the welcome. The trailing ⏎ pulses while
   // we wait for input, so we hide the native blinking cursor - one cue
   // instead of two. Box, label, and ⏎ all use the brand blue so the
-  // call to action ties back to the logo.
-  const ctaText = 'Press ENTER to get started';
+  // call to action ties back to the logo. Someone already signed in from an
+  // earlier run skips the browser, so the button only promises it otherwise.
+  const ctaText = loadAccountToken()
+    ? 'Press ENTER to get started'
+    : 'Press ENTER to connect via GitHub';
   const boxBody = `  ${ctaText}  ⏎  `;
   const w = boxBody.length;
   console.log(`  ${brand('╭' + '─'.repeat(w) + '╮')}`);
@@ -794,9 +800,25 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(0);
   }
 
-  // ENTER: continue normal setup.
+  // ENTER: sign in, then continue normal setup.
   // Clear the viewport + scrollback so the welcome doesn't linger.
   clearScreen();
+  if (welcomeKey === '\r' || welcomeKey === '\n') {
+    const session = await signIn({
+      pressed: true,
+      note: [
+        'Connect via GitHub in your browser (Google works too).',
+        "Come back here once you're done and we'll carry on.",
+      ],
+    });
+    if (!session.ok) {
+      reportSignInFailure(session, { retry: 'init' });
+      await debug.flushAndExit(1);
+    }
+    welcomeSessionToken = session.token;
+    // The sign-in prompt has done its job; start the next screen at the top.
+    if (!session.cached) clearScreen();
+  }
   } else {
     // Non-interactive (agent / CI / pipe): skip the animated welcome and its
     // ENTER / demo / human-handoff gate entirely - there's no TTY to drive
@@ -1194,9 +1216,12 @@ if (command === '--version' || command === '-v' || command === 'version') {
   });
   // The user can press on past failing checks, and setup lets them, but
   // they aren't fully set up, so the run ends with a bug-report offer.
-  if (checks && !checks.ok) {
-    const failing = (checks.rows || []).filter((r) => !r.ok).map((r) => r.label).filter(Boolean);
-    debug.markUnfinished(`setup checks still failing${failing.length ? ` (${failing.join(', ')})` : ''}`);
+  // Owner identity is the exception: leaving it unset or unconfirmed is the
+  // user's call, and requests still flow, so it isn't a setup failure.
+  const failing = (checks?.rows || []).filter((r) => !r.ok && r.kind !== 'owner-id');
+  if (failing.length) {
+    const labels = failing.map((r) => r.label).filter(Boolean);
+    debug.markUnfinished(`setup checks still failing${labels.length ? ` (${labels.join(', ')})` : ''}`);
   }
   plan.makeUpdater(1)({ status: 'done', sub: { 0: 'done', 1: 'done', 2: 'done', 3: 'done' } });
 
@@ -1229,6 +1254,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     apiKey: ctx.apiKey,
     projectId: ctx.projectId,
     setupKey: ctx.setupKey,
+    sessionToken: welcomeSessionToken,
   });
 
   setupInProgress = false;

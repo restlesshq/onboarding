@@ -7,6 +7,7 @@ import { loadSettings } from '../lib/settings.js';
 import { SITE_URL, CLI_NAME } from '../lib/config.js';
 import { isInteractive } from '../lib/env.js';
 import { hashWriteKey, stageForClaim } from '../lib/project-init.js';
+import { claimWithSession } from '../lib/context-auth.js';
 import * as debug from '../lib/debug.js';
 
 function openBrowser(url) {
@@ -19,14 +20,19 @@ function openBrowser(url) {
   } catch {}
 }
 
+// Long enough for anyone actually finishing in the browser. The claim link
+// itself never expires, so stopping here loses nothing but the terminal's wait.
+export const CLAIM_WAIT_MS = 30 * 60 * 1000;
+
 /**
  * Poll the auth-check endpoint until the user finishes logging in. If the
- * AbortSignal fires we resolve to `null` so the caller can keep racing
- * other promises without an unhandled rejection.
+ * AbortSignal fires, or `waitMs` passes, we resolve to `null` so the caller
+ * can keep racing other promises without an unhandled rejection.
  */
-async function pollForAuth(token, signal) {
+async function pollForAuth(token, signal, waitMs = CLAIM_WAIT_MS) {
   const pollUrl = `${SITE_URL}/api/auth/check?token=${token}`;
-  while (!signal?.aborted) {
+  const deadline = Date.now() + waitMs;
+  while (!signal?.aborted && Date.now() < deadline) {
     try {
       const res = await fetch(pollUrl, { signal });
       if (res.ok) {
@@ -87,6 +93,23 @@ function pickApiEntry(settings, apiRootDir) {
   return settings.apis.find((a) => (a.rootDir || '.') === key) || settings.apis[0];
 }
 
+/** Who has the project now and what to do next: the end of both claim paths. */
+function claimedLines({ email, slug }) {
+  return [
+    `  ${green('✓')} Logged in as ${bold(email)}.`,
+    `  ${green('✓')} Project claimed: ${cyan(`${SITE_URL}/api/${slug}`)}`,
+    '',
+    '',
+    `  ${bold('Next steps:')}`,
+    '',
+    `    Commit your changes and deploy.`,
+    // All one dim line - a cyan `.restless/` inside it would render
+    // dim-cyan, which is muddier than just leaving it gray.
+    `    ${dim('Include the .restless/ folder so your team and CI use the same config.')}`,
+    '',
+  ];
+}
+
 export default async function setupAccount({
   rootDir,
   apiRootDir,
@@ -95,6 +118,8 @@ export default async function setupAccount({
   apiKey,
   projectId,
   setupKey,
+  sessionToken = null,
+  claimWaitMs = CLAIM_WAIT_MS,
 }) {
   // ── Sub 0: Upload OpenAPI specs ─────────────────────────────────
   // Stage everything the server needs BEFORE the user logs in, so the
@@ -169,6 +194,42 @@ export default async function setupAccount({
     update({ message: [`  ${dim('!')} ${artifacts.settingsError || 'Settings upload skipped.'}`] });
   }
 
+  const uploadDoneLine = hasLocalOas
+    ? `  ${green('✓')} Uploaded ${bold(oasFile)}.`
+    : null;
+
+  // A concrete recap of what the setup actually accomplished. Shown on the
+  // completion screen so the final step reads as a payoff with real numbers,
+  // not just another identical-looking intermediate step.
+  const recap = [
+    `  ${bold('Here’s what you set up:')}`,
+    `    ${green('✓')} ${endpointCount
+      ? `Mapped ${bold(String(endpointCount))} endpoint${endpointCount === 1 ? '' : 's'}`
+      : 'Mapped your API'}`,
+    `    ${green('✓')} Installed and wired the Restless SDK`,
+    hasLocalOas ? `    ${green('✓')} Uploaded ${bold(oasFile)}` : null,
+  ].filter(Boolean);
+
+  // ── Sub 1, signed in: claim with the welcome screen's session ──
+  // The person already connected their account before setup started, so the
+  // claim goes to that account directly, with no second browser trip. Any
+  // failure (expired session, server trouble) falls through to the claim link
+  // below, which is what every run did before sign-in moved up front.
+  setSpinner?.('Claiming your project');
+  const direct = await claimWithSession({ projectId, setupKey, token: sessionToken });
+  setSpinner?.('');
+  debug.log('setup-account.direct-claim', { ok: direct.ok, reason: direct.reason });
+  if (direct.ok) {
+    update({ sub: { 0: 'done', 1: 'done' }, status: 'done', message: [
+      ...celebrationBanner(`🎉  ${bold('Setup complete')}: your API is on Restless`),
+      '',
+      ...recap,
+      '',
+      ...claimedLines(direct),
+    ] });
+    return { apiKey, email: direct.email, slug: direct.slug };
+  }
+
   // ── Sub 1: Log in to claim the project ──────────────────────────
   // Hand the project + setupKey to the server up front, keyed by an
   // opaque token. The login URL we display only needs that token, so
@@ -206,25 +267,9 @@ export default async function setupAccount({
   // People retype this out of a terminal, so keep it as short as possible.
   const loginUrl = `${SITE_URL}/init/${token}`;
 
-  const uploadDoneLine = hasLocalOas
-    ? `  ${green('✓')} Uploaded ${bold(oasFile)}.`
-    : null;
-
-  // A concrete recap of what the setup actually accomplished. Shown on the
-  // completion screen so the final step reads as a payoff with real numbers,
-  // not just another identical-looking intermediate step.
-  const recap = [
-    `  ${bold('Here’s what you set up:')}`,
-    `    ${green('✓')} ${endpointCount
-      ? `Mapped ${bold(String(endpointCount))} endpoint${endpointCount === 1 ? '' : 's'}`
-      : 'Mapped your API'}`,
-    `    ${green('✓')} Installed and wired the Restless SDK`,
-    hasLocalOas ? `    ${green('✓')} Uploaded ${bold(oasFile)}` : null,
-  ].filter(Boolean);
-
   // Non-interactive (agent / CI): claiming the project is a human action -
   // it needs a browser login that no one is here to complete, and the auth
-  // poll below is unbounded, so racing it would hang forever. The OAS +
+  // poll below would hold the run for up to CLAIM_WAIT_MS for nothing. The OAS +
   // settings are already uploaded, so the project is fully staged; hand back
   // the claim URL and finish cleanly instead of blocking.
   if (!isInteractive()) {
@@ -260,7 +305,7 @@ export default async function setupAccount({
   // directly (skipping Enter), polling finishes first and we cancel the
   // prompt; if they press Enter, we open the browser and keep polling.
   const pollAbort = new AbortController();
-  const pollPromise = pollForAuth(token, pollAbort.signal);
+  const pollPromise = pollForAuth(token, pollAbort.signal, claimWaitMs);
   const enter = waitForEnter();
 
   const winner = await Promise.race([
@@ -293,21 +338,24 @@ export default async function setupAccount({
   }
   pollAbort.abort();
 
+  // Gave up waiting. A claim can still land in the browser later; this run
+  // just can't confirm it, so it ends unfinished with the way forward.
+  if (!result) {
+    update({ sub: { 0: 'done' }, status: 'failed', message: [
+      `  ${red('✗')} Stopped waiting for the browser after ${Math.round(claimWaitMs / 60000)} minutes.`,
+      '',
+      `  ${dim('You can still finish there:')} ${dim(loginUrl)}`,
+      `  ${dim('Or get a fresh link with')} ${cyan(`npx ${CLI_NAME} login`)}${dim('.')}`,
+    ] });
+    debug.markUnfinished("we didn't see the project get claimed");
+    return { apiKey };
+  }
+
   const { email, slug } = result;
 
   update({ sub: { 0: 'done', 1: 'done' }, status: 'done', message: [
     uploadDoneLine,
-    `  ${green('✓')} Logged in as ${bold(email)}.`,
-    `  ${green('✓')} Project claimed: ${cyan(`${SITE_URL}/api/${slug}`)}`,
-    '',
-    '',
-    `  ${bold('Next steps:')}`,
-    '',
-    `    Commit your changes and deploy.`,
-    // All one dim line - a cyan `.restless/` inside it would render
-    // dim-cyan, which is muddier than just leaving it gray.
-    `    ${dim('Include the .restless/ folder so your team and CI use the same config.')}`,
-    '',
+    ...claimedLines({ email, slug }),
     // `uploadDoneLine` is conditionally null, but the blank separators are
     // real content - filtering on truthiness dropped them and jammed this
     // whole block against the checkmarks above it.
