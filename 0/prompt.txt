@@ -1,0 +1,43 @@
+Read this guide and start implementation: /private/tmp/claude-501/-Users-marc--superset-worktrees-api-072273f6-try-replacing-press-enter-150f2139/644670b1-a6e4-458c-8184-3629b7736618/scratchpad/agent-email-claim-handoff.md
+
+---
+
+<task-notification>
+<task-id>b5brp3era</task-id>
+<tool-use-id>toolu_01UCygCHmqmAfTyKUwoLY5wN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-marc-Developer-restless-api/5a8a74a1-cad1-4a92-88f6-a6b55184e3ef/tasks/b5brp3era.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full app test suite" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+how can I test this locally
+
+---
+
+Also I want you to mirror the description from the trail into the corresponding github pr as well. Save this as a memory (in entire as well) so you always do this.
+
+---
+
+Make sure the titles match too
+
+---
+
+Run the server in teh worktree yoruself and give me a command I can use to run the local version of the npm module
+
+---
+
+I stopped it
+
+---
+
+Give me one command I can run
+
+---
+
+Can't you just use node /path/to/worktree
+
+---
+
+Investigate and fix the findings in both trails
