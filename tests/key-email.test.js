@@ -17,7 +17,7 @@ const SPEC = JSON.stringify({
 });
 
 describe('key --email, then login', () => {
-  let tmp, home, repo, server, siteUrl, calls, oasStatus;
+  let tmp, home, repo, server, siteUrl, calls, oasStatus, initStatus;
 
   beforeEach(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'key-email-'));
@@ -32,6 +32,7 @@ describe('key --email, then login', () => {
     }));
     calls = [];
     oasStatus = 201;
+    initStatus = 201;
     server = http.createServer((req, res) => {
       let body = '';
       req.on('data', (d) => { body += d; });
@@ -40,7 +41,7 @@ describe('key --email, then login', () => {
         calls.push({ route, body: body && !body.startsWith('\x1f') ? JSON.parse(body) : null });
         res.setHeader('content-type', 'application/json');
         if (req.url === '/api/projects/init') {
-          res.statusCode = 201;
+          res.statusCode = initStatus;
           return res.end(JSON.stringify({ project_id: 'p1', setup_key: 'sk1' }));
         }
         if (route === 'oas') res.statusCode = oasStatus;
@@ -102,6 +103,20 @@ describe('key --email, then login', () => {
       status: 'done',
       email: 'dev@example.com',
     });
+  });
+
+  it('records nothing at key time for a project that is already claimed', async () => {
+    await run(['key']);
+    // Age the stored key so `key` asks the server to renew it, which answers 409 once claimed.
+    const credsFile = path.join(home, '.restless', 'projects', 'p1.json');
+    const creds = JSON.parse(fs.readFileSync(credsFile, 'utf8'));
+    fs.writeFileSync(credsFile, JSON.stringify({ ...creds, savedAt: new Date(0).toISOString() }));
+    initStatus = 409;
+
+    const key = await run(['key', '--email', 'dev@example.com']);
+    expect(key.status).toBe(0);
+    expect(key.json.emailSaved).toBe(false);
+    expect(JSON.parse(fs.readFileSync(credsFile, 'utf8'))).not.toHaveProperty('setupEmail');
   });
 
   it('sends nothing for a project that is already claimed', async () => {

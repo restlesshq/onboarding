@@ -1412,7 +1412,8 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(1);
   }
   const { projectId, reused: reusedProject, recovered: recoveredProject } = result;
-  const emailSaved = setupEmail ? rememberSetupEmail(projectId, setupEmail) : false;
+  // A claimed project has its owner already, so there is nothing for `login` to link.
+  const emailSaved = setupEmail && !result.claimed ? rememberSetupEmail(projectId, setupEmail) : false;
 
   let envFile = null;
   if (!inline && replacedStaleKey) {
@@ -1462,7 +1463,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
     } else {
       console.log(`  ${bold('RESTLESS_KEY')}=${apiKey}`);
     }
-    if (setupEmail) {
+    if (setupEmail && !result.claimed) {
       console.log(emailSaved
         ? `  ${green('✓')} ${cyan(`npx ${CLI_NAME} login`)} will link this project to ${bold(setupEmail)}.`
         : `  ${yellow('!')} Couldn't record ${bold(setupEmail)}. The claim link from ${cyan(`npx ${CLI_NAME} login`)} still works.`);
