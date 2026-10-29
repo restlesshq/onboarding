@@ -9,3 +9,7 @@ TODO.md
 
 # Local publish helper
 publish.sh
+
+# Local Claude Code state
+.claude/worktrees/
+.claude/settings.local.json
