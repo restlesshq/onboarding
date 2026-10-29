@@ -13,7 +13,7 @@ import { resolveProjectDirs, findGitRoot, isGitIgnored } from '../lib/project.js
 import { countOperations } from '../lib/oas-parse.js';
 import { readSpecForUpload } from '../lib/oas-bundle.js';
 import { setGitRoot } from '../lib/pathGuard.js';
-import { flagValue, positionalArg } from '../lib/args.js';
+import { flagValue, positionalArg, readFlag } from '../lib/args.js';
 import generateOas from '../steps/generate-oas.js';
 import prepareAccount from '../steps/prepare-account.js';
 import installSdk from '../steps/install-sdk.js';
@@ -34,7 +34,7 @@ import { detectStack, docsRepoMessage, noCodeMessage, stackCheckDisabled, unsupp
 import { resolveOwningDir } from '../lib/install-target.js';
 import { apiDirKey, loadSettings, saveSettings, upsertApi, generatePrefix, formatRequestId, stripRequestIdPrefix } from '../lib/settings.js';
 import { findExistingEnvFile, existingRestlessKey, replaceRestlessKey } from '../steps/prepare-account.js';
-import { generateWriteKey, ensureProject, hashWriteKey, loadProjectCreds, pollForLandedLog, stageForClaim } from '../lib/project-init.js';
+import { generateWriteKey, ensureProject, hashWriteKey, loadProjectCreds, pollForLandedLog, saveSetupEmail, stageForClaim } from '../lib/project-init.js';
 import { normalizeBaseUrl, parseStatus, describeDiagnosis, diagnoseFromHeaders, splitCurlIncludeOutput, fixContext } from '../lib/test-diagnosis.js';
 import { checkOasServers, guessBaseUrl, isPlausibleBaseUrl } from '../lib/base-url.js';
 import { safeWriteFileSync, safeAppendFileSync } from '../lib/pathGuard.js';
@@ -542,7 +542,7 @@ function printHelp() {
   console.log(`  ${bold('For coding agents')}`);
   const agentRows = [
     ['guide [oas|sdk]', 'Print the instructions for writing the spec / wiring the SDK'],
-    ['key', 'Register the project and put RESTLESS_KEY in .env'],
+    ['key [--email <e>]', 'Register the project and put RESTLESS_KEY in .env'],
     ['register --oas <f>', 'Record a spec in .restless/settings.json'],
     ['verify --url <u>', 'Send one request, confirm the SDK saw it and the log landed'],
     ['login', 'Print the URL the user opens to claim the project'],
@@ -1339,13 +1339,23 @@ if (command === '--version' || command === '-v' || command === 'version') {
   await debug.flushAndExit(0);
 
 } else if (command === 'key') {
-  // ── npx restless key [--json] [--inline] [--dir <apiRootDir>] ──────────
+  // ── npx restless key [--json] [--inline] [--dir <apiRootDir>] [--email <e>] ─
   // Mint + register a project and put the key where the SDK will find it.
   // Ours to own: it generates a credential and registers it server-side,
   // which is not something a calling agent should improvise.
   const asJson = process.argv.includes('--json');
   const inline = process.argv.includes('--inline');
   const dirFlag = flagValue(process.argv, '--dir');
+  // The address the user confirmed they sign in with: the dashboard offers them the project under it.
+  const emailFlag = readFlag(process.argv, '--email');
+  const setupEmail = emailFlag.value?.trim().toLowerCase();
+  if (emailFlag.present && !bugReport.isValidEmail(setupEmail)) {
+    const msg = `--email needs the address the user signs in to Restless with${emailFlag.value ? `, not "${emailFlag.value}"` : ''}.`;
+    if (asJson) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
+    else console.log(red(`\n  ✗ ${msg}\n`));
+    debug.skipReport('key: invalid --email');
+    await debug.flushAndExit(1);
+  }
 
   // --inline exists so a HUMAN can place the key themselves. An agent has
   // no use for the plaintext (the key goes into .env and the SDK reads it
@@ -1401,6 +1411,9 @@ if (command === '--version' || command === '-v' || command === 'version') {
     await debug.flushAndExit(1);
   }
   const { projectId, reused: reusedProject, recovered: recoveredProject } = result;
+  const emailSaved = setupEmail && result.setupKey && !result.claimed
+    ? await saveSetupEmail({ projectId, setupKey: result.setupKey, email: setupEmail })
+    : false;
 
   let envFile = null;
   if (!inline && replacedStaleKey) {
@@ -1426,6 +1439,7 @@ if (command === '--version' || command === '-v' || command === 'version') {
       reusedProject: !!reusedProject,
       ...(recoveredProject && { recoveredProject: true }),
       ...(replacedStaleKey && { replacedStaleKey: true }),
+      ...(setupEmail && { emailSaved }),
     };
     // The plaintext key reaches stdout only when --inline asked for exactly
     // that. In the default flow it's already in .env; echoing it again would
@@ -1448,6 +1462,11 @@ if (command === '--version' || command === '-v' || command === 'version') {
       console.log(`  ${green('✓')} ${keyLine} ${bold(rel)}.`);
     } else {
       console.log(`  ${bold('RESTLESS_KEY')}=${apiKey}`);
+    }
+    if (setupEmail) {
+      console.log(emailSaved
+        ? `  ${green('✓')} Linked to ${bold(setupEmail)}: signing in with it shows this project, link or no link.`
+        : `  ${yellow('!')} Couldn't link ${bold(setupEmail)}. The claim link from ${cyan(`npx ${CLI_NAME} login`)} still works.`);
     }
     if (envIgnoredByGit === false) {
       console.log(`  ${yellow('!')} ${bold(rel)} is ${bold('not')} ignored by git - add it to ${bold('.gitignore')} before you commit.`);

@@ -92,7 +92,7 @@ that shouldn't be improvised:
 | command | what it does |
 | ------- | ------------ |
 | `npx restless guide [oas\|sdk]` | Prints the spec-writing / SDK-wiring instructions |
-| `npx restless key` | Registers the project and writes `RESTLESS_KEY` to `.env` |
+| `npx restless key [--email <e>]` | Registers the project and writes `RESTLESS_KEY` to `.env` |
 | `npx restless register --oas <file>` | Records a spec in `.restless/settings.json` (rejects localhost servers) |
 | `npx restless verify --url <url>` | Sends one request, confirms the SDK saw it, the log landed, and no owner-id placeholder remains |
 | `npx restless login` | Prints the URL you open to claim the project |
@@ -106,6 +106,12 @@ reach. It writes the key straight to `.env` and never echoes it into the agent's
 transcript; `--inline` prints it on stdout instead, but only for humans - under
 a coding agent it refuses. It also reports whether git ignores that env file
 (`envIgnoredByGit`), so the key can't slip into a commit unnoticed.
+
+`--email` links the unclaimed project to the address you sign in with. The
+claim link from `npx restless login` is still the way in, but if you lose it,
+signing in to the dashboard with that email shows the project under Projects,
+waiting for one click to add it. Your agent asks for the email and reads it
+back before using it, since a typo would offer the project to someone else.
 
 **Not Claude Code or Codex?** Those two announce themselves in the environment;
 everything else we infer from a run whose input and output are both pipes,

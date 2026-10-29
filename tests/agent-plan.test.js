@@ -157,6 +157,23 @@ describe('buildAgentPlan', () => {
     expect(plan).toContain('"projectId"');
   });
 
+  it('has the agent confirm the user\'s email before linking the project to it', () => {
+    const plan = buildAgentPlan({ rootDir: dir, cli: 'api', agent: 'Claude Code' });
+    const flat = plan.replace(/\s+/g, ' ');
+    expect(flat).toContain('Read it back and wait for them to confirm it');
+    expect(plan).toContain('npx api key --json --email <confirmed-email>');
+    expect(flat.indexOf('confirm it')).toBeLessThan(flat.indexOf('key --json'));
+  });
+
+  it('names the email fallback in one sentence and keeps the claim link primary', () => {
+    const plan = buildAgentPlan({ rootDir: dir, cli: 'api', agent: 'Claude Code' });
+    const step4 = plan.slice(plan.indexOf('## Step 4'), plan.indexOf('## Rules'));
+    expect(step4.replace(/\s+/g, ' ')).toContain('if it is lost, signing in at the dashboard with the email from step 2 shows the project under Projects');
+    expect(step4).toContain('LAST line of your wrap-up');
+    // The fallback is one sentence, not a section: the step stays about the same size.
+    expect(step4.split('\n').length).toBeLessThanOrEqual(26);
+  });
+
   it('tells the agent to end its wrap-up with the claim URL', () => {
     const plan = buildAgentPlan({ rootDir: dir, cli: 'api', agent: 'Claude Code' });
     expect(plan).toContain('LAST line of your wrap-up');

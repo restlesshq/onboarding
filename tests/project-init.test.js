@@ -688,3 +688,28 @@ describe('pollForLandedLog: expired setup key', () => {
     expect(res.unauthorized).toBeUndefined();
   });
 });
+
+describe('saveSetupEmail', () => {
+  it('sends the email as a setup-progress step, authenticated by the setup key', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200 }));
+    const saved = await mod.saveSetupEmail({ projectId: 'p1', setupKey: 'sk', email: 'dev@example.com', fetchImpl });
+
+    expect(saved).toBe(true);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toMatch(/\/api\/projects\/p1\/setup-progress$/);
+    expect(JSON.parse(init.body)).toEqual({
+      setup_key: 'sk',
+      step: 'email',
+      status: 'done',
+      email: 'dev@example.com',
+    });
+  });
+
+  it('reports false instead of throwing when the server is unreachable or refuses', async () => {
+    const down = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
+    expect(await mod.saveSetupEmail({ projectId: 'p1', setupKey: 'sk', email: 'a@b.co', fetchImpl: down })).toBe(false);
+
+    const refused = vi.fn(async () => ({ ok: false, status: 400 }));
+    expect(await mod.saveSetupEmail({ projectId: 'p1', setupKey: 'sk', email: 'a@b.co', fetchImpl: refused })).toBe(false);
+  });
+});
