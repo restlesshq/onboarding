@@ -20,6 +20,7 @@ import {
 } from '../lib/oas-source.js';
 import { fetchDashboardSpec, compareWithDashboard } from '../lib/project-sync.js';
 import { combineSpecFiles } from '../lib/oas-combine.js';
+import { settleGeneratedServers } from '../lib/spec-base-url.js';
 import { generateOasWithAi, locateOasWithAi, pickOasCandidate, describeCoverageGap } from './generate-oas.js';
 import { describeCheck } from './update-render.js';
 import { loadCachedToken } from '../lib/cli-token.js';
@@ -217,6 +218,10 @@ async function generateInto({ apiEntry, rootDir, packageDir, destDir, setSpinner
   if (!gen.ok) {
     return { ok: false, error: gen.error || "The generator didn't produce a spec." };
   }
+  // The generator writes a placeholder host. A framework's own generator
+  // names its servers itself, so only an AI-written spec is forced to the
+  // setting.
+  settleGeneratedServers(gen.oasFullPath || path.join(rootDir, gen.oasFile), apiEntry.baseUrl, { force: !preferNative });
   return {
     ok: true,
     oasFile: gen.oasFile,
@@ -273,7 +278,10 @@ function compareStaged({ apiEntry, rootDir, stagedFile, oasSource, coverage = nu
   if (hasCurrent && hashOasFile(currentAbs) === hashOasFile(stagedAbs)) {
     cleanRefreshTemp(rootDir);
     releaseRefreshTemp();
-    return { kind: 'unchanged', endpoints };
+    // The spec stays where it is. Without a target, `applySpecChange` returns
+    // undefined and `--refresh` records that as the spec path, dropping the
+    // spec from settings and from the push.
+    return { kind: 'unchanged', endpoints, targetFile: apiEntry.oasFile };
   }
 
   return {

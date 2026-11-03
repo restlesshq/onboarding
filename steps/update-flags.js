@@ -5,6 +5,7 @@ import { CLI_NAME } from '../lib/config.js';
 import { readFlag } from '../lib/args.js';
 import { getCliToken } from '../lib/cli-token.js';
 import { syncProject } from '../lib/project-sync.js';
+import { syncSpecBaseUrl, describeSpecBaseUrl } from '../lib/spec-base-url.js';
 import { countOasEndpoints, describeOasSource, oasSourceFacets } from '../lib/oas-source.js';
 import {
   adoptSpecFromArg,
@@ -308,6 +309,20 @@ export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, fla
     }
   }
 
+  // ── Base URL into the spec ────────────────────────────────────────
+  // After the spec step, so it applies to whichever spec the project now has.
+  // Runs whenever --base-url is given, even if settings already matched: a
+  // project left with the right setting and a stale spec is repaired by
+  // repeating the command. Re-read the entry: the edits above and recordSpec
+  // both wrote to disk, not to the `apiEntry` we were handed.
+  if ('baseUrl' in flags.edits) {
+    const current = findApiEntry(loadSettings(rootDir), apiEntry) || apiEntry;
+    const servers = syncSpecBaseUrl({ rootDir, apiEntry: current, baseUrl: current.baseUrl });
+    out.specServers = servers.outcome;
+    if (servers.push) specFile = servers.oasFile;
+    lines.push(...describeSpecBaseUrl(servers));
+  }
+
   debug.log('update.flags', { edited: out.edited, spec: !!specFile, sync: flags.sync });
 
   // ── Push ──────────────────────────────────────────────────────────
@@ -351,7 +366,7 @@ export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, fla
 export const UPDATE_FLAGS = [
   ['--status', "Report whether your spec changed. Writes nothing, pushes nothing"],
   ['--name <n>', 'Rename the API on the dashboard'],
-  ['--base-url <u>', "Set the API's production base URL"],
+  ['--base-url <u>', "Set the API's production base URL (and a generated spec's servers)"],
   ['--internal / --external', 'Hide from or show on the public docs'],
   ['--prefix <P>', 'Set the request-ID prefix (1-7 letters/digits)'],
   ['--oas <file|url>', 'Point at a different spec and push it'],

@@ -266,6 +266,9 @@ describe('--refresh applies without a prompt, because the flag is the consent', 
     // Callers read `diff` unconditionally; an unchanged refresh has to answer
     // with an empty one rather than making every one of them null-check.
     expect(res.diff).toEqual({ added: [], removed: [], modified: [], changed: false });
+    // `--refresh` records this as the spec path. Undefined here dropped the
+    // spec from settings and from the push.
+    expect(res.oasFile).toBe('.restless/openapi.json');
     fetchSpy.mockRestore();
   });
 
@@ -334,5 +337,48 @@ describe('revalidate reads and never writes', () => {
     });
     expect(check.kind).toBe('failed');
     expect(check.reason).toContain('parse');
+  });
+});
+
+describe('a regenerated spec gets the project base URL', () => {
+  // The generator is prompted with a placeholder host. Setup swaps it out;
+  // a refresh from `update` used to ship it, pointing docs and MCP calls at
+  // example.com and undoing any base URL `update --base-url` had written.
+  const withPlaceholder = { ...V2, servers: [{ url: 'https://example.com' }] };
+
+  it('replaces the placeholder in the staged spec', async () => {
+    writeSpec('.restless/openapi.json', V1);
+    generateOasWithAi.mockImplementation(engineWriting(withPlaceholder));
+
+    const res = await stageRefresh({
+      apiEntry: { oasFile: '.restless/openapi.json', oasSource: { kind: 'ai' }, baseUrl: 'https://api.acme.io' },
+      rootDir: tmp,
+      strategy: 'generate',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(readSpec(res.oasFile).servers).toEqual([{ url: 'https://api.acme.io' }]);
+  });
+});
+
+describe('an AI refresh that only differed by the placeholder', () => {
+  it('reads as unchanged and keeps the spec path', async () => {
+    // Before the placeholder was replaced, every regenerate differed by its
+    // servers. Now an identical regenerate is unchanged, which has to keep
+    // pointing at the spec rather than recording no spec at all.
+    const current = { ...V1, servers: [{ url: 'https://api.acme.io' }] };
+    writeSpec('.restless/openapi.json', current);
+    generateOasWithAi.mockImplementation(engineWriting({ ...V1, servers: [{ url: 'https://example.com' }] }));
+
+    const res = await refreshFromRecordedSource({
+      rootDir: tmp,
+      packageDir: tmp,
+      apiEntry: { oasFile: '.restless/openapi.json', oasSource: { kind: 'ai' }, baseUrl: 'https://api.acme.io' },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.unchanged).toBe(true);
+    expect(res.oasFile).toBe('.restless/openapi.json');
+    expect(readSpec('.restless/openapi.json')).toEqual(current);
   });
 });

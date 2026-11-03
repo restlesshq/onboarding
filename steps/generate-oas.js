@@ -6,6 +6,7 @@ import { buildApiSourceBlock, buildSourceBlock } from '../lib/inline-source.js';
 import { mergeSpecs, planSpecGroups, countOperations as countMergedOperations } from '../lib/oas-merge.js';
 import { bold, dim, green, red, yellow, cyan, ask, askWithPreview, askYesNo, singleSelect, multiSelect } from '../lib/ui.js';
 import { guessBaseUrl } from '../lib/base-url.js';
+import { PLACEHOLDER_DOMAIN, settleGeneratedServers } from '../lib/spec-base-url.js';
 import { loadSettings, saveSettings, upsertApi, generatePrefix } from '../lib/settings.js';
 import * as telemetry from '../lib/telemetry.js';
 import { startStep } from '../lib/step-template.js';
@@ -45,7 +46,6 @@ const MAX_COVERAGE_ATTEMPTS = 2;
 // Aliased rather than re-declared so there is one definition of the path the
 // CLI owns - `update` decides what it may overwrite from the same constant.
 const OAS_FILE = MANAGED_OAS_FILE;
-const PLACEHOLDER_DOMAIN = 'https://example.com';
 
 // Where the locate-oas AI pass lists multiple matching specs when it can't
 // pick one unambiguously, so the CLI can ask the user which to use.
@@ -746,14 +746,10 @@ async function finalizeApi({
   // actually generated one (not when we're reusing a user's existing file).
   if (replacePlaceholderDomain && finalOasFile) {
     const oasFullPath = path.join(rootDir, finalOasFile);
-    try {
-      const oasContent = fs.readFileSync(oasFullPath, 'utf8');
-      // A blank answer means "no public URL confirmed". A relative server is
-      // the honest spelling of that - this file gets uploaded, and a made-up
-      // localhost:3000 would ship to the dashboard as the API's base URL.
-      const updated = oasContent.replaceAll(PLACEHOLDER_DOMAIN, domain || '/');
-      safeWriteFileSync(oasFullPath, updated);
-    } catch {}
+    // A blank answer means "no public URL confirmed", which becomes a relative
+    // server - this file gets uploaded, and a made-up localhost:3000 would ship
+    // to the dashboard as the API's base URL.
+    try { settleGeneratedServers(oasFullPath, domain); } catch {}
   }
 
   // Pick a test endpoint now, while the OAS is fresh in our hands. Step 3
