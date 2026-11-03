@@ -63,14 +63,18 @@ export function canonicalizeSdkBlock(ctx) {
 }
 
 /**
- * Mask any quoted Restless API key in a line before it is printed: the
- * terminal and CI logs must never show a full key. Same shape as
- * `redactSetupContext`: first 8 and last 4 characters.
+ * Mask any Restless API key in a line before it is printed: the terminal and
+ * CI logs must never show a full key. Same shape as `redactSetupContext`:
+ * first 8 and last 4 characters.
+ *
+ * Matches the key by its prefix, not by its quotes, so every language's
+ * string form is covered (Ruby's `%q{...}`, Python's `r'...'`, Go's
+ * backticks).
  */
 export function maskKeyLiterals(line) {
   return line.replace(
-    /(["'`])((?:rstlss_|rdme_)[^"'`]*)\1/g,
-    (_, q, key) => `${q}${key.slice(0, 8)}...${key.slice(-4)}${q}`,
+    /\b(?:rstlss_|rdme_)[A-Za-z0-9_-]+/g,
+    (key) => `${key.slice(0, 8)}...${key.slice(-4)}`,
   );
 }
 

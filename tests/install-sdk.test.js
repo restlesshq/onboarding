@@ -258,6 +258,12 @@ describe('maskKeyLiterals', () => {
     expect(maskKeyLiterals("restless('rdme_0123456789abcdef')")).toBe("restless('rdme_012...cdef')");
   });
 
+  it('masks a key in any language\'s string form, not just quotes', () => {
+    expect(maskKeyLiterals('Restless.new(%q{rdme_0123456789abcdef})')).toBe('Restless.new(%q{rdme_012...cdef})');
+    expect(maskKeyLiterals("restless.Client(r'rstlss_abcdefghijklmnop')")).toBe("restless.Client(r'rstlss_a...mnop')");
+    expect(maskKeyLiterals('restless.New(`rstlss_abcdefghijklmnop`)')).toBe('restless.New(`rstlss_a...mnop`)');
+  });
+
   it('leaves lines without a key alone', () => {
     expect(maskKeyLiterals('require(x)(process.env.RESTLESS_KEY)')).toBe('require(x)(process.env.RESTLESS_KEY)');
   });
