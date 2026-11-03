@@ -278,7 +278,10 @@ function compareStaged({ apiEntry, rootDir, stagedFile, oasSource, coverage = nu
   if (hasCurrent && hashOasFile(currentAbs) === hashOasFile(stagedAbs)) {
     cleanRefreshTemp(rootDir);
     releaseRefreshTemp();
-    return { kind: 'unchanged', endpoints };
+    // The spec stays where it is. Without a target, `applySpecChange` returns
+    // undefined and `--refresh` records that as the spec path, dropping the
+    // spec from settings and from the push.
+    return { kind: 'unchanged', endpoints, targetFile: apiEntry.oasFile };
   }
 
   return {
