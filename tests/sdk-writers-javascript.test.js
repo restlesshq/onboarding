@@ -296,6 +296,83 @@ app.use(sdk.setup((req) => ({ apiKey: sdk.mask(req.headers.authorization) })));`
     expect(canonicalizeInitArg('const x = 1;\n', ctxWith({ keyDelivery: 'inline', apiKey: 'rdme_abc' })))
       .toBe('const x = 1;\n');
   });
+  // RES-22: a pre-wired app with options was rewritten to a bare
+  // `require('@restlessai/sdk')()`, silently dropping its sampling rule and
+  // custom fetch. Only the key argument is the CLI's; options are the user's.
+  describe('keeps options passed after the key', () => {
+    const optionsBlock = `const restless = require('@restlessai/sdk')(process.env.RESTLESS_KEY, {
+  fetch: instrumentedFetch,
+  sampling: { routes: { 'GET /healthz': 'off' } },
+});
+app.use(restless.setup((req) => ({ apiKey: restless.mask(req.headers['x-api-key']) })));`;
+    const options = `{
+  fetch: instrumentedFetch,
+  sampling: { routes: { 'GET /healthz': 'off' } },
+}`;
+    const dotenv = { keyDelivery: 'env', envLoader: { mode: 'dotenv', evidence: 'dotenv installed' } };
+
+    it('leaves a multi-line options object alone when the key already matches', () => {
+      expect(canonicalizeInitArg(optionsBlock, ctxWith(dotenv))).toBe(optionsBlock);
+    });
+
+    it('holds the key slot with undefined in no-arg mode, so options stay second', () => {
+      const out = canonicalizeInitArg(optionsBlock, ctxWith({ keyDelivery: 'manual' }));
+      expect(out).toContain(`require('@restlessai/sdk')(undefined, ${options});`);
+      expect(readBlockFields(out).initArgForm).toBe('no-arg');
+      // Settles: a second run is a no-op.
+      expect(canonicalizeInitArg(out, ctxWith({ keyDelivery: 'manual' }))).toBe(out);
+    });
+
+    it('inlines the key without touching the options', () => {
+      const out = canonicalizeInitArg(optionsBlock, ctxWith({ keyDelivery: 'inline', apiKey: 'rdme_abc' }));
+      expect(out).toContain(`require('@restlessai/sdk')("rdme_abc", ${options});`);
+      expect(readBlockFields(out)).toMatchObject({ initArgForm: 'literal', initArgValue: 'rdme_abc' });
+    });
+
+    it('reads an option holding a call whole, instead of cutting at its paren', () => {
+      const block = "const sdk = require('@restlessai/sdk')(process.env.RESTLESS_KEY, { fetch: wrap(fetch), sampling: 0.5 });\n";
+      expect(canonicalizeInitArg(block, ctxWith({ keyDelivery: 'manual' })))
+        .toBe("const sdk = require('@restlessai/sdk')(undefined, { fetch: wrap(fetch), sampling: 0.5 });\n");
+    });
+
+    it('keeps options on the ESM form', () => {
+      const block = `import restless from '@restlessai/sdk';
+const sdk = restless(process.env.RESTLESS_KEY, {
+  baseUrl: 'https://example.test',
+});`;
+      const out = canonicalizeInitArg(block, ctxWith({ keyDelivery: 'inline', apiKey: 'rdme_abc' }));
+      expect(out).toContain(`const sdk = restless("rdme_abc", {\n  baseUrl: 'https://example.test',\n});`);
+    });
+
+    it('still drops a lone key to a bare call in no-arg mode', () => {
+      const out = canonicalizeInitArg(
+        "const sdk = require('@restlessai/sdk')(process.env.RESTLESS_KEY);\n",
+        ctxWith({ keyDelivery: 'manual' }),
+      );
+      expect(out).toBe("const sdk = require('@restlessai/sdk')();\n");
+    });
+
+    it('ignores commas and parens inside comments and strings', () => {
+      const commented = "const sdk = require('@restlessai/sdk')(process.env.RESTLESS_KEY /* env, optional */);\n";
+      expect(canonicalizeInitArg(commented, ctxWith({ keyDelivery: 'manual' })))
+        .toBe("const sdk = require('@restlessai/sdk')();\n");
+      expect(readBlockFields(commented).initArgForm).toBe('env-ref');
+
+      const lineComment = `const sdk = require('@restlessai/sdk')(
+  process.env.RESTLESS_KEY, // key, from env (see README)
+  { sampling: { routes: { 'GET /x(y), z': 'off' } } },
+);`;
+      expect(canonicalizeInitArg(lineComment, ctxWith({ keyDelivery: 'manual' }))).toBe(`const sdk = require('@restlessai/sdk')(
+  undefined, // key, from env (see README)
+  { sampling: { routes: { 'GET /x(y), z': 'off' } } },
+);`);
+    });
+
+    it('leaves a call whose parens never close alone', () => {
+      const block = "const sdk = require('@restlessai/sdk')(process.env.RESTLESS_KEY, {\n";
+      expect(canonicalizeInitArg(block, ctxWith({ keyDelivery: 'manual' }))).toBe(block);
+    });
+  });
 });
 
 describe('hasInit', () => {
