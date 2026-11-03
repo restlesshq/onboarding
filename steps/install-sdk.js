@@ -63,6 +63,18 @@ export function canonicalizeSdkBlock(ctx) {
 }
 
 /**
+ * Mask any quoted Restless API key in a line before it is printed: the
+ * terminal and CI logs must never show a full key. Same shape as
+ * `redactSetupContext`: first 8 and last 4 characters.
+ */
+export function maskKeyLiterals(line) {
+  return line.replace(
+    /(["'`])((?:rstlss_|rdme_)[^"'`]*)\1/g,
+    (_, q, key) => `${q}${key.slice(0, 8)}...${key.slice(-4)}${q}`,
+  );
+}
+
+/**
  * The lines a rewrite changed, as `{ before, after }` arrays, or null when
  * nothing changed. Trims the common head and tail, which is enough here:
  * canonicalize only touches the init line and the inline-key TODO above it.
@@ -828,17 +840,17 @@ export default async function installSdk({
 
   // On a re-run the init line is the user's, so say exactly what the CLI
   // changed in it rather than claiming it was left alone. Options after the
-  // key are never touched; only the key argument (and the inline TODO) is.
+  // key are never touched; only the key argument and the inline TODO are.
   const rewroteExisting = preExistingWiring && canon.change;
   const headerLine = !preExistingWiring
     ? `  ${green('✓')} SDK installed and configured.`
     : rewroteExisting
-      ? `  ${green('✓')} SDK wiring confirmed - updated the API key argument in ${bold(canon.file)}:`
+      ? `  ${green('✓')} SDK wiring confirmed - changed these lines in ${bold(canon.file)}:`
       : `  ${green('✓')} SDK wiring confirmed - left existing setup alone.`;
   const baseMsg = [headerLine];
   if (rewroteExisting) {
-    for (const l of canon.change.before) baseMsg.push(red(`    - ${l.trim()}`));
-    for (const l of canon.change.after) baseMsg.push(green(`    + ${l.trim()}`));
+    for (const l of canon.change.before) baseMsg.push(red(`    - ${maskKeyLiterals(l.trim())}`));
+    for (const l of canon.change.after) baseMsg.push(green(`    + ${maskKeyLiterals(l.trim())}`));
   }
   if (inlineMode && canon.mode === 'canonicalized') {
     baseMsg.push(dim(`  Inlined the API key in ${bold(canon.file)} - testing only, don't commit.`));

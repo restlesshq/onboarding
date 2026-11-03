@@ -352,6 +352,22 @@ const sdk = restless(process.env.RESTLESS_KEY, {
       expect(out).toBe("const sdk = require('@restlessai/sdk')();\n");
     });
 
+    it('ignores commas and parens inside comments and strings', () => {
+      const commented = "const sdk = require('@restlessai/sdk')(process.env.RESTLESS_KEY /* env, optional */);\n";
+      expect(canonicalizeInitArg(commented, ctxWith({ keyDelivery: 'manual' })))
+        .toBe("const sdk = require('@restlessai/sdk')();\n");
+      expect(readBlockFields(commented).initArgForm).toBe('env-ref');
+
+      const lineComment = `const sdk = require('@restlessai/sdk')(
+  process.env.RESTLESS_KEY, // key, from env (see README)
+  { sampling: { routes: { 'GET /x(y), z': 'off' } } },
+);`;
+      expect(canonicalizeInitArg(lineComment, ctxWith({ keyDelivery: 'manual' }))).toBe(`const sdk = require('@restlessai/sdk')(
+  undefined, // key, from env (see README)
+  { sampling: { routes: { 'GET /x(y), z': 'off' } } },
+);`);
+    });
+
     it('leaves a call whose parens never close alone', () => {
       const block = "const sdk = require('@restlessai/sdk')(process.env.RESTLESS_KEY, {\n";
       expect(canonicalizeInitArg(block, ctxWith({ keyDelivery: 'manual' }))).toBe(block);

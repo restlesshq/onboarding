@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { nextWiringStatus, describeAiActivity, canonicalizeSdkBlock, changedLines } from '../steps/install-sdk.js';
+import { nextWiringStatus, describeAiActivity, canonicalizeSdkBlock, changedLines, maskKeyLiterals } from '../steps/install-sdk.js';
 import { detectNext, nextPluginWiringStatus } from '../lib/next-detect.js';
 import { setGitRoot } from '../lib/pathGuard.js';
 
@@ -248,5 +248,17 @@ describe('changedLines', () => {
 
   it('returns only the differing middle, including an inserted line', () => {
     expect(changedLines('a\nx\nc', 'a\n// todo\ny\nc')).toEqual({ before: ['x'], after: ['// todo', 'y'] });
+  });
+});
+
+describe('maskKeyLiterals', () => {
+  it('masks a quoted API key so the printed diff never shows it whole', () => {
+    expect(maskKeyLiterals(`require('@restlessai/sdk')("rstlss_abcdefghijklmnop", {`))
+      .toBe(`require('@restlessai/sdk')("rstlss_a...mnop", {`);
+    expect(maskKeyLiterals("restless('rdme_0123456789abcdef')")).toBe("restless('rdme_012...cdef')");
+  });
+
+  it('leaves lines without a key alone', () => {
+    expect(maskKeyLiterals('require(x)(process.env.RESTLESS_KEY)')).toBe('require(x)(process.env.RESTLESS_KEY)');
   });
 });
