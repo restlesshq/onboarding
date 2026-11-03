@@ -399,7 +399,7 @@ async function editSettings({ rootDir, apiEntry: chosenApi }) {
     const lines = describeSpecBaseUrl(servers);
     if (lines.length) console.log('');
     for (const line of lines) console.log(line);
-    if (servers.outcome === 'rewritten') oasFile = servers.oasFile;
+    if (servers.push) oasFile = servers.oasFile;
   }
 
   return publish({ rootDir, apiEntry: chosenApi, oasFile });

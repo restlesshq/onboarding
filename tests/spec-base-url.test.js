@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import { setGitRoot } from '../lib/pathGuard.js';
 import { loadSettings, saveSettings } from '../lib/settings.js';
-import { syncSpecBaseUrl } from '../lib/spec-base-url.js';
+import { syncSpecBaseUrl, settleGeneratedServers, PLACEHOLDER_DOMAIN } from '../lib/spec-base-url.js';
 import { OAS_SOURCE_KINDS, oasSourceFacets } from '../lib/oas-source.js';
 
 vi.mock('../lib/cli-token.js', () => ({
@@ -52,7 +52,7 @@ describe('syncSpecBaseUrl', () => {
     const res = syncSpecBaseUrl({
       rootDir: tmp, apiEntry: { oasFile: MANAGED, oasSource: { kind: 'agent' } }, baseUrl: NEW,
     });
-    expect(res).toEqual({ outcome: 'rewritten', oasFile: MANAGED, from: OLD });
+    expect(res).toEqual({ outcome: 'rewritten', oasFile: MANAGED, from: OLD, push: true });
     // Only the first server is the API's base URL; the rest are left alone.
     expect(readSpec(MANAGED).servers).toEqual([{ url: NEW }, { url: 'https://staging.example.net' }]);
   });
@@ -75,6 +75,8 @@ describe('syncSpecBaseUrl', () => {
     const before = fs.readFileSync(path.join(tmp, MANAGED), 'utf8');
     const res = syncSpecBaseUrl({ rootDir: tmp, apiEntry: { oasFile: MANAGED, oasSource: { kind: 'ai' } }, baseUrl: NEW });
     expect(res.outcome).toBe('unchanged');
+    // Still pushed: matching locally says nothing about the dashboard.
+    expect(res.push).toBe(true);
     expect(fs.readFileSync(path.join(tmp, MANAGED), 'utf8')).toBe(before);
   });
 
@@ -93,7 +95,7 @@ describe('syncSpecBaseUrl', () => {
       apiEntry: { oasFile: 'docs/openapi.json', oasSource: { kind: 'found', path: 'docs/openapi.json' } },
       baseUrl: NEW,
     });
-    expect(res).toMatchObject({ outcome: 'not-ours', specUrl: OLD });
+    expect(res).toMatchObject({ outcome: 'not-ours', specUrl: OLD, push: false });
     expect(fs.readFileSync(path.join(tmp, 'docs/openapi.json'), 'utf8')).toBe(before);
   });
 
@@ -165,6 +167,19 @@ describe('update --base-url', () => {
     expect(calls[0].body.oas_raw).toContain(NEW);
   });
 
+  it('pushes a spec that already matches, so a failed upload can be retried', async () => {
+    // The first run rewrote the file and then the upload failed. Locally the
+    // spec now matches, but the dashboard still has the old host.
+    const entry = setUp({ baseUrl: NEW });
+    writeSpec(MANAGED, spec([{ url: NEW }]));
+    const calls = mockFetch();
+
+    expect(await run(entry, '--base-url', NEW)).toBe(0);
+
+    expect(calls[0].url).toContain('/api/projects/p-1/oas');
+    expect(calls[0].body.oas_raw).toContain(NEW);
+  });
+
   it('repairs a stale spec when the setting already matches', async () => {
     // Larkspur's state after the bug: settings right, spec wrong. Repeating
     // the command has to fix it, not report "already matched" and stop.
@@ -197,5 +212,38 @@ describe('update --base-url', () => {
 
     expect(readSpec(MANAGED).servers[0].url).toBe(OLD);
     expect(calls.map((c) => c.url)).toEqual([expect.stringContaining('/sync')]);
+  });
+});
+
+describe('settleGeneratedServers', () => {
+  /**
+   * `update`'s regenerate prompts with a placeholder host. Setup swaps it for
+   * the real URL; a refresh has to as well, or it ships example.com and undoes
+   * any base URL `update` wrote.
+   */
+  const STAGED = '.restless/.oas-refresh/openapi.json';
+
+  it('replaces the placeholder with the base URL', () => {
+    writeSpec(STAGED, spec([{ url: PLACEHOLDER_DOMAIN }]));
+    settleGeneratedServers(path.join(tmp, STAGED), NEW);
+    expect(readSpec(STAGED).servers).toEqual([{ url: NEW }]);
+  });
+
+  it('falls back to a relative server when there is no base URL', () => {
+    writeSpec(STAGED, spec([{ url: PLACEHOLDER_DOMAIN }]));
+    settleGeneratedServers(path.join(tmp, STAGED), undefined);
+    expect(readSpec(STAGED).servers).toEqual([{ url: '/' }]);
+  });
+
+  it('with force, overrides whatever host the model wrote', () => {
+    writeSpec(STAGED, spec([{ url: OLD }]));
+    settleGeneratedServers(path.join(tmp, STAGED), NEW, { force: true });
+    expect(readSpec(STAGED).servers[0].url).toBe(NEW);
+  });
+
+  it('without force, leaves a host the generator chose', () => {
+    writeSpec(STAGED, spec([{ url: OLD }]));
+    settleGeneratedServers(path.join(tmp, STAGED), NEW);
+    expect(readSpec(STAGED).servers[0].url).toBe(OLD);
   });
 });

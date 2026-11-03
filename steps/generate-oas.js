@@ -6,6 +6,7 @@ import { buildApiSourceBlock, buildSourceBlock } from '../lib/inline-source.js';
 import { mergeSpecs, planSpecGroups, countOperations as countMergedOperations } from '../lib/oas-merge.js';
 import { bold, dim, green, red, yellow, cyan, ask, askWithPreview, askYesNo, singleSelect, multiSelect } from '../lib/ui.js';
 import { guessBaseUrl } from '../lib/base-url.js';
+import { PLACEHOLDER_DOMAIN } from '../lib/spec-base-url.js';
 import { loadSettings, saveSettings, upsertApi, generatePrefix } from '../lib/settings.js';
 import * as telemetry from '../lib/telemetry.js';
 import { startStep } from '../lib/step-template.js';
@@ -45,7 +46,6 @@ const MAX_COVERAGE_ATTEMPTS = 2;
 // Aliased rather than re-declared so there is one definition of the path the
 // CLI owns - `update` decides what it may overwrite from the same constant.
 const OAS_FILE = MANAGED_OAS_FILE;
-const PLACEHOLDER_DOMAIN = 'https://example.com';
 
 // Where the locate-oas AI pass lists multiple matching specs when it can't
 // pick one unambiguously, so the CLI can ask the user which to use.

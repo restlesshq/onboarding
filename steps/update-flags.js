@@ -319,7 +319,7 @@ export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, fla
     const current = findApiEntry(loadSettings(rootDir), apiEntry) || apiEntry;
     const servers = syncSpecBaseUrl({ rootDir, apiEntry: current, baseUrl: current.baseUrl });
     out.specServers = servers.outcome;
-    if (servers.outcome === 'rewritten') specFile = servers.oasFile;
+    if (servers.push) specFile = servers.oasFile;
     lines.push(...describeSpecBaseUrl(servers));
   }
 

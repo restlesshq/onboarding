@@ -336,3 +336,24 @@ describe('revalidate reads and never writes', () => {
     expect(check.reason).toContain('parse');
   });
 });
+
+describe('a regenerated spec gets the project base URL', () => {
+  // The generator is prompted with a placeholder host. Setup swaps it out;
+  // a refresh from `update` used to ship it, pointing docs and MCP calls at
+  // example.com and undoing any base URL `update --base-url` had written.
+  const withPlaceholder = { ...V2, servers: [{ url: 'https://example.com' }] };
+
+  it('replaces the placeholder in the staged spec', async () => {
+    writeSpec('.restless/openapi.json', V1);
+    generateOasWithAi.mockImplementation(engineWriting(withPlaceholder));
+
+    const res = await stageRefresh({
+      apiEntry: { oasFile: '.restless/openapi.json', oasSource: { kind: 'ai' }, baseUrl: 'https://api.acme.io' },
+      rootDir: tmp,
+      strategy: 'generate',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(readSpec(res.oasFile).servers).toEqual([{ url: 'https://api.acme.io' }]);
+  });
+});
