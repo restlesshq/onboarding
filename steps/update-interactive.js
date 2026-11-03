@@ -9,6 +9,7 @@ import { isInteractive } from '../lib/env.js';
 import { oasSourceFacets, describeOasSource } from '../lib/oas-source.js';
 import { getCliToken } from '../lib/cli-token.js';
 import { syncProject } from '../lib/project-sync.js';
+import { syncSpecBaseUrl, describeSpecBaseUrl } from '../lib/spec-base-url.js';
 import updateOas, {
   applySpecChange,
   confirmSpecChange,
@@ -315,6 +316,10 @@ async function editSettings({ rootDir, apiEntry: chosenApi }) {
     return 1;
   }
 
+  // Opening the Base URL field counts even if the value is kept: confirming it
+  // is how someone repairs a spec that never picked up an earlier change.
+  const startingBaseUrl = apiEntry.baseUrl;
+  let baseUrlTouched = false;
   let lastIndex = 0;
   for (;;) {
     repaintHeader(chosenApi);
@@ -353,6 +358,7 @@ async function editSettings({ rootDir, apiEntry: chosenApi }) {
       const next = (await ask(`  ${bold('Name')}: `, { defaultValue: apiEntry.name || '' })).trim();
       if (next && next !== apiEntry.name) apiEntry.name = next;
     } else if (result.index === 1) {
+      baseUrlTouched = true;
       const next = (await ask(`  ${bold('Base URL')}: `, { defaultValue: apiEntry.baseUrl || '' })).trim();
       const err = next ? validateApiField('baseUrl', next) : null;
       if (err) console.log(red(`  ✗ ${err}`));
@@ -383,7 +389,20 @@ async function editSettings({ rootDir, apiEntry: chosenApi }) {
     saveSettings(rootDir, settings);
   }
 
-  return publish({ rootDir, apiEntry: chosenApi });
+  // The dashboard's docs, try-it and MCP calls read the spec's servers, not
+  // this setting, so a base URL change has to land in the spec and be pushed.
+  // The chat editor can change it too, hence comparing as well as `touched`.
+  let oasFile = null;
+  if (apiEntry.baseUrl && (baseUrlTouched || apiEntry.baseUrl !== startingBaseUrl)) {
+    const servers = syncSpecBaseUrl({ rootDir, apiEntry, baseUrl: apiEntry.baseUrl });
+    debug.log('update.spec-servers', { outcome: servers.outcome });
+    const lines = describeSpecBaseUrl(servers);
+    if (lines.length) console.log('');
+    for (const line of lines) console.log(line);
+    if (servers.outcome === 'rewritten') oasFile = servers.oasFile;
+  }
+
+  return publish({ rootDir, apiEntry: chosenApi, oasFile });
 }
 
 /**

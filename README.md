@@ -219,7 +219,7 @@ answer:
 npx restless update --status --json     # did the spec change? writes nothing
 npx restless update --refresh --json    # re-run its source, then push spec + settings
 npx restless update --oas <file|url>    # point at a different spec and push it
-npx restless update --base-url https://api.acme.com
+npx restless update --base-url https://api.acme.com   # also sets a generated spec's servers, then pushes it
 npx restless update --sync              # push settings with no edits
 ```
 
