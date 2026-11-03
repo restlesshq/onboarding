@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bry31kcm1</task-id>
+<tool-use-id>toolu_01QUgdWUvB8LnNMT5vcVxrZD</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-marc--superset-worktrees-api-072273f6-investigate-res-22-7c49f5d7/f2aab91d-0de6-4cdf-a090-6b12ce348f5f/tasks/bry31kcm1.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll trail for new open findings (up to 30 min)" completed (exit code 0)</summary>
+</task-notification>
