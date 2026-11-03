@@ -48,14 +48,37 @@ function findWiredSourceFile(installDir, language = 'javascript') {
  * env-ref / no-arg). Auth extraction and owner.id (the AI's
  * domain-specific work) are preserved.
  */
-function canonicalizeSdkBlock(ctx) {
+export function canonicalizeSdkBlock(ctx) {
   const writer = getSdkWriter(ctx.language);
   const file = findWiredSourceFile(ctx.installDir, ctx.language);
-  if (!file) return { mode: 'no-source', file: null };
+  if (!file) return { mode: 'no-source', file: null, change: null };
   const content = fs.readFileSync(file, 'utf8');
   const next = writer.canonicalizeInitArg(content, ctx);
   if (next !== content) safeWriteFileSync(file, next);
-  return { mode: 'canonicalized', file: path.relative(ctx.installDir, file) };
+  return {
+    mode: 'canonicalized',
+    file: path.relative(ctx.installDir, file),
+    change: changedLines(content, next),
+  };
+}
+
+/**
+ * The lines a rewrite changed, as `{ before, after }` arrays, or null when
+ * nothing changed. Trims the common head and tail, which is enough here:
+ * canonicalize only touches the init line and the inline-key TODO above it.
+ */
+export function changedLines(before, after) {
+  if (before === after) return null;
+  const a = before.split('\n');
+  const b = after.split('\n');
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (
+    tail < a.length - head && tail < b.length - head &&
+    a[a.length - 1 - tail] === b[b.length - 1 - tail]
+  ) tail++;
+  return { before: a.slice(head, a.length - tail), after: b.slice(head, b.length - tail) };
 }
 
 
@@ -803,10 +826,20 @@ export default async function installSdk({
     if (plugin.hasDefineConfig) ctx.entryFile = plugin.restlessConfigFile;
   }
 
-  const headerLine = preExistingWiring
-    ? `  ${green('✓')} SDK wiring confirmed - left existing setup alone.`
-    : `  ${green('✓')} SDK installed and configured.`;
+  // On a re-run the init line is the user's, so say exactly what the CLI
+  // changed in it rather than claiming it was left alone. Options after the
+  // key are never touched; only the key argument (and the inline TODO) is.
+  const rewroteExisting = preExistingWiring && canon.change;
+  const headerLine = !preExistingWiring
+    ? `  ${green('✓')} SDK installed and configured.`
+    : rewroteExisting
+      ? `  ${green('✓')} SDK wiring confirmed - updated the API key argument in ${bold(canon.file)}:`
+      : `  ${green('✓')} SDK wiring confirmed - left existing setup alone.`;
   const baseMsg = [headerLine];
+  if (rewroteExisting) {
+    for (const l of canon.change.before) baseMsg.push(red(`    - ${l.trim()}`));
+    for (const l of canon.change.after) baseMsg.push(green(`    + ${l.trim()}`));
+  }
   if (inlineMode && canon.mode === 'canonicalized') {
     baseMsg.push(dim(`  Inlined the API key in ${bold(canon.file)} - testing only, don't commit.`));
   }

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { nextWiringStatus, describeAiActivity } from '../steps/install-sdk.js';
+import { nextWiringStatus, describeAiActivity, canonicalizeSdkBlock, changedLines } from '../steps/install-sdk.js';
 import { detectNext, nextPluginWiringStatus } from '../lib/next-detect.js';
 import { setGitRoot } from '../lib/pathGuard.js';
 
@@ -193,5 +193,60 @@ describe('describeAiActivity (what the failure message claims)', () => {
   it('still reports edits over an error', () => {
     const lines = describeAiActivity({ edited: [`${dir}/app.js`], error: 'boom' }, dir, 'Claude Code');
     expect(lines).toEqual(["Claude Code edited app.js, but the SDK still isn't wired in."]);
+  });
+});
+
+// RES-22: re-running setup on an app that already had the SDK wired with
+// options rewrote the init line to a bare call, dropping them, while
+// reporting that it had left the existing setup alone.
+describe('canonicalizeSdkBlock on an app already wired with options', () => {
+  let dir;
+  const server = `const express = require('express');
+const restless = require('@restlessai/sdk')(process.env.RESTLESS_KEY, {
+  fetch: instrumentedFetch,
+  sampling: { routes: { 'GET /healthz': 'off' } },
+});
+const app = express();
+app.use(restless.setup(async (req) => ({
+  apiKey: restless.mask(req.headers['x-api-key']),
+  owner: { id: req.user.id },
+})));
+app.listen(3000);
+`;
+
+  beforeEach(() => {
+    dir = tmp();
+    setGitRoot(dir);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { express: '4', '@restlessai/sdk': '0.4.0' } }));
+    fs.writeFileSync(path.join(dir, 'server.js'), server);
+  });
+  afterEach(() => { setGitRoot(null); fs.rmSync(dir, { recursive: true, force: true }); });
+
+  const run = (extra) => canonicalizeSdkBlock({ installDir: dir, language: 'javascript', ...extra });
+  const read = () => fs.readFileSync(path.join(dir, 'server.js'), 'utf8');
+
+  it('changes nothing when the key form already matches', () => {
+    const r = run({ keyDelivery: 'env', envLoader: { mode: 'dotenv', evidence: 'dotenv' } });
+    expect(r).toMatchObject({ mode: 'canonicalized', file: 'server.js', change: null });
+    expect(read()).toBe(server);
+  });
+
+  it('rewrites only the key, keeps every option, and reports the change', () => {
+    const r = run({ keyDelivery: 'manual', envLoader: null });
+    expect(read()).toBe(server.replace('(process.env.RESTLESS_KEY, {', '(undefined, {'));
+    expect(r.change).toEqual({
+      before: ["const restless = require('@restlessai/sdk')(process.env.RESTLESS_KEY, {"],
+      after: ["const restless = require('@restlessai/sdk')(undefined, {"],
+    });
+  });
+});
+
+describe('changedLines', () => {
+  it('returns null for identical content', () => {
+    expect(changedLines('a\nb', 'a\nb')).toBeNull();
+  });
+
+  it('returns only the differing middle, including an inserted line', () => {
+    expect(changedLines('a\nx\nc', 'a\n// todo\ny\nc')).toEqual({ before: ['x'], after: ['// todo', 'y'] });
   });
 });
