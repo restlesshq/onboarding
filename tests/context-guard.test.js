@@ -165,19 +165,38 @@ describe('inspectCandidate: obfuscated, encoded and personal data', () => {
     ['a percent-encoded email', 'Payload priya%40acme%2Ecom is decoded server side.'],
     ['a phone number', 'Call +1 (415) 555-2671 to raise the limit.'],
     ['a national ID', 'The holder SSN 123-45-6789 is attached.'],
-    ['a card number', 'Card 4111 1111 1111 1111 was declined in the test.'],
-    ['an IBAN', 'Payouts go to DE89 3704 0044 0532 0130 00.'],
     ['URL credentials', 'Fetch https://bot:s3cretpass@api.acme.com/v1/export nightly.'],
-    ['an Anthropic key', `Set ${fake('sk', '-ant-', 'api03-', 'abcdefghijklmnop')} in the env.`],
     ['a high-entropy token', `Use ${fake('q8Zr2LmX9vKp', '4TnW7bYc1HsJ6dFg3Ae5')} as the seed.`],
+    ['a hex hash', `Hash ${fake('9f86d081884c7d659a2feaa0', 'c55ad015a3bf4f1b2b0b822c')} matched.`],
+    ['a base64 Stripe key', `Payload ${Buffer.from(fake('sk', '_live_', '4eC39HqLyjWDarjtT1zdp7dc')).toString('base64')}.`],
   ])('rejects %s', (_label, content) => {
     expect(inspectCandidate({ title: 'Data', content }).safe).toBe(false);
+  });
+
+  // Grouped digits also look like a phone number, so each asserts its OWN rule fired.
+  it.each([
+    ['a card number', 'Card 4111 1111 1111 1111 was declined.', 'contains a payment card number'],
+    ['an ungrouped card number', 'Card 4111111111111111 was declined.', 'contains a payment card number'],
+    ['an IBAN', 'Payouts go to DE89 3704 0044 0532 0130 00.', 'contains a bank account number'],
+  ])('rejects %s with its own reason', (_label, content, reason) => {
+    expect(inspectCandidate({ title: 'Data', content }).reasons).toContain(reason);
+  });
+
+  it('lets the Luhn check decide: a near-miss number is not a card', () => {
+    expect(inspectCandidate({ title: 'Docs', content: 'Order 4111111111111112 shipped.' }).safe).toBe(true);
+  });
+
+  it('catches an Anthropic key under the generic key rule', () => {
+    const key = fake('sk', '-ant-', 'api03-', 'abcdefghijklmnop');
+    expect(inspectCandidate({ title: 'Env', content: `Set ${key}.` }).reasons).toContain('contains an API key');
   });
 
   it.each([
     ['an RFC 2606 example address', 'Use user@example.com as the sandbox login.'],
     ['an ISO date', 'Removed after 2027-01-01.'],
     ['a long identifier', 'Call getOrganizationMembersByRole to list members.'],
+    ['an env var name with a digit', 'Set RESTLESS_OAUTH2_CLIENT_CREDENTIALS_ENDPOINT in your env.'],
+    ['a versioned method name', 'Call listOrganizationWebhookEndpointsByStatusV2 to page.'],
   ])('passes %s', (_label, content) => {
     expect(inspectCandidate({ title: 'Docs', content }).safe).toBe(true);
   });
