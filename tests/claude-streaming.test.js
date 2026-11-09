@@ -39,7 +39,7 @@ describe('private tool-free review', () => {
     const onError = vi.fn();
     await claude.run(secret, '/tmp/proj', { model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, onError });
     expect(queryMock.mock.calls[0][0].options).toMatchObject({
-      model: 'claude-sonnet-5-5', tools: [], allowedTools: [], mcpServers: {}, persistSession: false,
+      model: 'claude-sonnet-5-5', tools: [], allowedTools: [], mcpServers: {}, strictMcpConfig: true, persistSession: false,
     });
     expect(onError).not.toHaveBeenCalled();
     expect(JSON.stringify(debug.snapshot())).not.toContain(secret);
@@ -52,6 +52,24 @@ describe('private tool-free review', () => {
     const onError = vi.fn();
     await claude.run('candidate', '/tmp/proj', { model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, onError });
     expect(onError).toHaveBeenCalledWith('review-provider-failure');
+  });
+
+  it('denies inherited MCP calls before execution without restricting normal runs', async () => {
+    const tool = { tool_name: 'mcp__inherited__publish', tool_input: { text: 'candidate' }, tool_use_id: 'one' };
+    queryMock.mockImplementationOnce(({ options }) => async function* () {
+      const hook = options.hooks.PreToolUse[0].hooks[0];
+      expect(await hook(tool)).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+      expect(await hook({ ...tool, tool_name: 'Read' })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+      yield { type: 'result', subtype: 'success', is_error: false };
+    }());
+    const onError = vi.fn();
+    await claude.run('candidate', '/tmp/proj', { model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, onError });
+    expect(onError).toHaveBeenCalledWith('review-provider-failure');
+    queryMock.mockReturnValue(stream({ type: 'result', subtype: 'success', is_error: false }));
+    await claude.run('normal', '/tmp/proj');
+    const normal = queryMock.mock.calls[1][0].options;
+    expect(normal.strictMcpConfig).not.toBe(true);
+    expect(await normal.hooks.PreToolUse[0].hooks[0](tool)).toEqual({});
   });
 });
 const delta = (partial_json) => ({

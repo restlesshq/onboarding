@@ -134,7 +134,16 @@ export default {
     const editPaths = new Map(); // tool_use id -> absolute path
     const deniedIds = new Set(); // refused by the guard, or failed
     const denied = [];
+    let reviewToolAttempted = false;
     const preToolUse = async (input) => {
+      if (toolFree) {
+        reviewToolAttempted = true;
+        return { hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: 'Safety review cannot use tools.',
+        } };
+      }
       const verdict = guard(input.tool_name, input.tool_input);
       if (!verdict) return {};
       deniedIds.add(input.tool_use_id);
@@ -183,7 +192,7 @@ export default {
           maxTurns,
           ...(model ? { model } : {}),
           ...(sensitive ? { persistSession: false } : {}),
-          ...(toolFree ? { tools: [], mcpServers: {}, abortController: controller, persistSession: false } : {}),
+          ...(toolFree ? { tools: [], mcpServers: {}, strictMcpConfig: true, abortController: controller, persistSession: false } : {}),
           allowedTools: toolFree ? [] : ['Read', 'Edit', 'Glob', 'Grep', 'Bash', 'Write'],
           cwd,
           // A hook, not `canUseTool`: allowedTools auto-approve and never reach
@@ -274,6 +283,7 @@ export default {
     }
 
     if (deadline) clearTimeout(deadline);
+    if (reviewToolAttempted) runError = 'unexpected-tool';
     if (toolFree && !completed) runError = 'incomplete-review';
     if (sensitive && runError) runError = 'review-provider-failure';
     if (runError) {
