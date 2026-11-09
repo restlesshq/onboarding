@@ -175,12 +175,12 @@ describe('pushOas', () => {
   });
 
   it('reports a network failure without throwing', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNRESET'));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNRESET private-token private-spec'));
     const res = await pushOas({
       rootDir: tmp, oasFile: '.restless/openapi.json', projectId: 'p-1', token: 'tok',
     });
     expect(res.ok).toBe(false);
-    expect(res.error).toContain('ECONNRESET');
+    expect(res.error).toBe('Spec upload or screening request failed. Publication was not confirmed.');
     fetchSpy.mockRestore();
   });
 

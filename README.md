@@ -252,6 +252,26 @@ never discards them: `--json` reports `synced` separately from `ok` and says why
 Authorizing a machine needs a browser once; after that the session is reused for
 24 hours.
 
+# Screening before spec publication
+
+Authenticated spec updates wait for server-side knowledge screening before they
+report a successful sync. A pending response is not publication approval.
+The CLI sends the raw spec once, then polls with its session and an opaque
+screening ID. If the server replaces that ID, polling uses the replacement.
+Each request has a 70-second timeout; the total wait is limited to two hours.
+Only pending responses are polled again. Other HTTP errors stop the update.
+
+Ctrl-C stops waiting and exits with code 130. It does not cancel work already
+running on the server. No further polling or settings sync starts after the CLI
+observes cancellation. Local edits remain saved. With `--json`, an interrupted
+or timed-out screening reports `ok: false`, `specSynced: false`, and, when known,
+`pending: true`, `screening_id`, and `retry_after_ms`. This context contains no
+session token or spec content, and is not evidence that publication completed.
+
+Unclaimed setup still uploads to private staging without running paid screening
+in the anonymous request. Screening is required before that staged spec can be
+published during the authenticated claim.
+
 # Feedback for an API's maintainers
 
 Every request through Restless gets an id, and that id is enough to send the

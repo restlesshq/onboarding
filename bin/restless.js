@@ -135,7 +135,13 @@ process.on('warning', (w) => {
 
 // Handle Ctrl+C gracefully
 let setupInProgress = false;
+let updateAbortController = null;
 process.on('SIGINT', () => {
+  if (updateAbortController) {
+    telemetryExit.outcome = 'interrupted';
+    updateAbortController.abort();
+    return;
+  }
   // Show cursor in case it was hidden, move below current output
   process.stdout.write('\x1b[?25h\n');
   if (setupInProgress) {
@@ -2576,19 +2582,25 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // ── Run it ─────────────────────────────────────────────────────────
   // Flags mean "do exactly this, don't ask me", which is the only form a
   // coding agent or a CI job can drive. Otherwise there is a human here.
+  updateAbortController = updateFlags?.status ? null : new AbortController();
   const updateCode = updateFlags
     ? await runFlagUpdate({
       rootDir: updateRoot,
       packageDir: updatePkgDir,
       apiEntry: chosenApi,
       flags: updateFlags,
+      signal: updateAbortController?.signal,
     })
     : await runInteractiveUpdate({
       rootDir: updateRoot,
       packageDir: updatePkgDir,
       apiEntry: chosenApi,
+      signal: updateAbortController?.signal,
     });
-  await debug.flushAndExit(updateCode);
+  const updateCancelled = updateAbortController?.signal.aborted;
+  updateAbortController = null;
+  if (updateCancelled) await debug.abortExit(130);
+  else await debug.flushAndExit(updateCode);
 } else if (command === 'context') {
   // ── npx restless context ───────────────────────────────────────────────
   // Read this repo and propose what the AI should know about the API.

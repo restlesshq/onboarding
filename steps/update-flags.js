@@ -203,7 +203,7 @@ export async function reportStatus({ rootDir, apiEntry, json }) {
  * reach the dashboard never loses them - and the result says which of the two
  * happened rather than collapsing both into "failed".
  */
-export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, flags }) {
+export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, flags, signal }) {
   const { json } = flags;
 
   // Read-only, and deliberately first: `--status` must work with no
@@ -330,6 +330,10 @@ export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, fla
   // scripted run on that for ten minutes is worse than reporting that the
   // local edits landed and the sync didn't.
   const tokenRes = await getCliToken({ projectId: apiEntry.projectId, interactive: false });
+  if (signal?.aborted) {
+    report({ json, ok: false, ...out, cancelled: true, error: 'Sync cancelled.', lines: [red('  Sync cancelled.')] });
+    return 130;
+  }
   if (!tokenRes.ok) {
     out.error = tokenRes.error;
     lines.push(
@@ -342,8 +346,14 @@ export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, fla
     return 0;
   }
 
+  let pendingReported = false;
   const res = await syncProject({
     rootDir, apiEntry, oasFile: specFile, token: tokenRes.token,
+    signal,
+    onPending: () => {
+      if (!json && !pendingReported) console.log(dim('  Screening the spec before publication. This can take several minutes. Ctrl-C stops waiting.'));
+      pendingReported = true;
+    },
   });
   out.specSynced = res.specSynced;
   out.synced = res.settingsSynced;
@@ -352,9 +362,11 @@ export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, fla
   }
   if (!res.ok) {
     out.error = res.error;
+    if (res.pending) Object.assign(out, { pending: true, screening_id: res.screening_id, retry_after_ms: res.retry_after_ms });
+    if (res.cancelled) out.cancelled = true;
     lines.push(`  ${red('✗')} ${res.error}`);
     report({ json, ok: false, ...out, lines });
-    return 1;
+    return res.cancelled ? 130 : 1;
   }
   lines.push(`  ${green('✓')} Settings synced.`);
 

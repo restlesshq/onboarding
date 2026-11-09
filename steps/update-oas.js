@@ -98,6 +98,7 @@ function guardRefreshTemp(rootDir) {
   };
   process.once('exit', clean);
   process.once('SIGINT', () => {
+    if (!_tempGuardRoot) return;
     clean();
     process.exit(130);
   });

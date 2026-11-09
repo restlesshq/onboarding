@@ -55,6 +55,26 @@ function mockFetchSequence(responses) {
 }
 
 describe('syncProject', () => {
+  it('waits for screening approval before fingerprinting or pushing settings', async () => {
+    const screeningId = 'a'.repeat(64);
+    const { spy, urls } = mockFetchSequence([
+      { ok: true, status: 202, json: async () => ({ pending: true, screening_id: screeningId, retry_after_ms: 1000 }) },
+      { ok: true, status: 200, json: async () => ({ endpoints: 2 }) },
+      { ok: true, status: 200, json: async () => ({}) },
+    ]);
+    try {
+      const res = await syncProject({
+        rootDir: tmp, apiEntry, oasFile: '.restless/openapi.json', token: 'tok',
+      });
+      expect(res).toMatchObject({ ok: true, specSynced: true, settingsSynced: true, endpoints: 2 });
+      expect(urls).toHaveLength(3);
+      expect(JSON.parse(spy.mock.calls[1][1].body)).toEqual({ token: 'tok', screening_id: screeningId });
+      expect(urls[2]).toContain('/sync');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('pushes the spec, then the settings, and fingerprints what landed', async () => {
     const { spy, urls } = mockFetchSequence([
       { ok: true, status: 200, json: async () => ({ endpoints: 2 }) },
@@ -75,6 +95,26 @@ describe('syncProject', () => {
     expect(entry.oasHash).toBe(canonicalOasHash(SPEC));
     expect(entry.oasOperationCount).toBe(2);
     spy.mockRestore();
+  });
+
+  it('stops on a terminal resumed error without retrying raw content or exposing the response body', async () => {
+    const { spy, urls } = mockFetchSequence([
+      { ok: true, status: 202, json: async () => ({ pending: true, screening_id: 'a'.repeat(64), retry_after_ms: 1000 }) },
+      { ok: false, status: 503, text: async () => 'private-spec-sentinel tok' },
+    ]);
+    try {
+      const res = await syncProject({
+        rootDir: tmp, apiEntry, oasFile: '.restless/openapi.json', token: 'tok',
+      });
+      expect(res).toMatchObject({ ok: false, specSynced: false, settingsSynced: false });
+      expect(res.error).toContain('503');
+      expect(res.error).not.toContain('private-spec-sentinel');
+      expect(urls).toHaveLength(2);
+      expect(JSON.parse(spy.mock.calls[1][1].body)).not.toHaveProperty('oas_raw');
+      expect(loadSettings(tmp).apis[0].oasHash).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('pushes only the settings when there is no new spec', async () => {
