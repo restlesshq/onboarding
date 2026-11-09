@@ -160,7 +160,6 @@ describe('inspectCandidate: obfuscated, encoded and personal data', () => {
     ['a bracketed email', 'Write to priya[at]acme[dot]com for access.'],
     ['a zero-width split email', `Write to ${email.replace('@', '\u200B@\u200B')}.`],
     ['a full-width email', 'Write to ｐｒｉｙａ＠ａｃｍｅ．ｃｏｍ today.'],
-    ['a base64 email', `Payload ${Buffer.from(email).toString('base64')} is decoded server side.`],
     ['a hex email', `Payload ${Buffer.from(email).toString('hex')} is decoded server side.`],
     ['a percent-encoded email', 'Payload priya%40acme%2Ecom is decoded server side.'],
     ['a phone number', 'Call +1 (415) 555-2671 to raise the limit.'],
@@ -168,7 +167,6 @@ describe('inspectCandidate: obfuscated, encoded and personal data', () => {
     ['URL credentials', 'Fetch https://bot:s3cretpass@api.acme.com/v1/export nightly.'],
     ['a high-entropy token', `Use ${fake('q8Zr2LmX9vKp', '4TnW7bYc1HsJ6dFg3Ae5')} as the seed.`],
     ['a hex hash', `Hash ${fake('9f86d081884c7d659a2feaa0', 'c55ad015a3bf4f1b2b0b822c')} matched.`],
-    ['a base64 Stripe key', `Payload ${Buffer.from(fake('sk', '_live_', '4eC39HqLyjWDarjtT1zdp7dc')).toString('base64')}.`],
   ])('rejects %s', (_label, content) => {
     expect(inspectCandidate({ title: 'Data', content }).safe).toBe(false);
   });
@@ -180,6 +178,42 @@ describe('inspectCandidate: obfuscated, encoded and personal data', () => {
     ['an IBAN', 'Payouts go to DE89 3704 0044 0532 0130 00.', 'contains a bank account number'],
   ])('rejects %s with its own reason', (_label, content, reason) => {
     expect(inspectCandidate({ title: 'Data', content }).reasons).toContain(reason);
+  });
+
+  // Asserts the decoder's own reason: the entropy rule may also fire on a long payload.
+  it.each([
+    ['a base64 email', Buffer.from(fake('jane', '@', 'acme.com')).toString('base64')],
+    ['a base64 Stripe key', Buffer.from(fake('sk', '_live_', '4eC39HqLyjWDarjtT1zdp7dc')).toString('base64')],
+  ])('catches %s by decoding it', (_label, encoded) => {
+    expect(inspectCandidate({ title: 'Payload', content: `Payload ${encoded} here.` }).reasons).toContain(
+      'hides a secret or personal detail in an encoded string',
+    );
+  });
+
+  it.each([
+    ['an HMAC helper name', 'Call verifyWebhookSignatureHmacSha256 on each delivery.'],
+    ['an algorithm header constant', 'Read RESTLESS_HMAC_SHA256_SIGNING_SECRET_HEADER first.'],
+    ['an acronym and version', 'Call parseXMLDocumentFromS3Bucket2 to import.'],
+  ])('passes %s', (_label, content) => {
+    expect(inspectCandidate({ title: 'Docs', content }).safe).toBe(true);
+  });
+
+  it('does not mistake a random key with long letter runs for a name', () => {
+    expect(inspectCandidate({ title: 'Seed', content: `Seed ${fake('Xqzvbt7Rkmpw', '2Hnlqd5Tfgwx')}.` }).safe).toBe(false);
+  });
+
+  it('withholds nearly every random 32-character key', () => {
+    let seed = 42;
+    const next = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let passed = 0;
+    for (let i = 0; i < 1000; i++) {
+      let key = '';
+      for (let j = 0; j < 32; j++) key += abc[Math.floor(next() * abc.length)];
+      if (!/\d/.test(key)) key = `${key.slice(0, 31)}7`;
+      if (inspectCandidate({ title: 'Seed', content: `Seed ${key}.` }).safe) passed++;
+    }
+    expect(passed).toBeLessThanOrEqual(5);
   });
 
   it('lets the Luhn check decide: a near-miss number is not a card', () => {
