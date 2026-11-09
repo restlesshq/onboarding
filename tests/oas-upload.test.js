@@ -70,10 +70,8 @@ describe('postOas', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('allows 30s, because the budget covers uploading the body too', async () => {
-    // The 10s this replaced aborted mid-upload on a 2.9MB spec and reported a
-    // bare timeout in place of the server's own 413.
-    expect(OAS_UPLOAD_TIMEOUT_MS).toBe(30000);
+  it('allows the server screening deadline plus upload time', async () => {
+    expect(OAS_UPLOAD_TIMEOUT_MS).toBe(70000);
     const fetchImpl = vi.fn().mockResolvedValue(ok());
     await postOas({ url: 'https://x/oas', payload: { setup_key: 'sk' }, fetchImpl });
     expect(fetchImpl.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
