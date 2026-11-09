@@ -297,12 +297,21 @@ async function reviewForLeaks(candidates, cwd, { setSpinner, model } = {}) {
       setSpinner,
       label: 'review-context',
       model, toolFree: true, sensitive: true,
+      outputFormat: { type: 'json_schema', schema: {
+        type: 'object', additionalProperties: false, required: ['verdicts'],
+        properties: { verdicts: { type: 'array', minItems: candidates.length, maxItems: candidates.length,
+          items: { type: 'object', additionalProperties: false, required: ['index', 'safe'],
+            properties: { index: { type: 'integer' }, safe: { type: 'boolean' }, reason: { type: 'string' } } },
+        } },
+      } },
       maxTurns: MAX_TURNS_REVIEW,
       onError: (err) => { reviewError = err; },
     });
-    verdicts = JSON.parse(raw);
-  } catch (err) {
-    reviewError = err.message;
+    const parsed = JSON.parse(raw);
+    if (!parsed || Object.keys(parsed).join() !== 'verdicts') throw new Error('malformed-review');
+    verdicts = parsed.verdicts;
+  } catch {
+    reviewError = reviewError || 'malformed-review';
   }
 
   if (reviewError) {
@@ -315,7 +324,9 @@ async function reviewForLeaks(candidates, cwd, { setSpinner, model } = {}) {
   const byIndex = new Map();
   for (const v of verdicts) {
     if (!v || !Number.isInteger(v.index) || v.index < 0 || v.index >= candidates.length || byIndex.has(v.index)
-      || typeof v.safe !== 'boolean' || Object.keys(v).some((k) => !['index', 'safe', 'reason'].includes(k))) {
+      || typeof v.safe !== 'boolean' || (!v.safe && (typeof v.reason !== 'string' || !v.reason.trim()))
+      || (v.reason !== undefined && typeof v.reason !== 'string')
+      || Object.keys(v).some((k) => !['index', 'safe', 'reason'].includes(k))) {
       return { ok: false, error: 'The review returned an invalid verdict.' };
     }
     byIndex.set(v.index, v);
@@ -325,12 +336,6 @@ async function reviewForLeaks(candidates, cwd, { setSpinner, model } = {}) {
   const withheld = [];
   candidates.forEach((candidate, i) => {
     const verdict = byIndex.get(i);
-    // No verdict for an item is not an approval. An item the reviewer skipped
-    // is an item nobody checked.
-    if (!verdict) {
-      withheld.push({ title: candidate.title, reasons: ['the redaction pass did not rule on it'] });
-      return;
-    }
     if (verdict.safe === true) safe.push(candidate);
     else {
       withheld.push({
@@ -586,7 +591,7 @@ export default async function contextStep({ project, token, cwd, cliVersion, yes
   if (failedPasses.length === passes.length) {
     console.log('');
     console.log(red('  ✗ Nothing was read, so there is nothing to report.'));
-    console.log(dim('    The debug log holds what each pass did before it stopped.'));
+    console.log(dim('    Sensitive pass details are not recorded. The categories above identify the failures.'));
     console.log('');
     return 1;
   }

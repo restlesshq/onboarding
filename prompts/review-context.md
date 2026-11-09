@@ -42,14 +42,14 @@ Reject the whole item. Do not rewrite it, do not star out the offending part: a 
 
 ## Output
 
-Output ONLY a JSON array with one entry per candidate, in the same order, and nothing else. No prose, no code fences.
+Output ONLY a JSON object with a `verdicts` array containing one entry per candidate, in the same order. No prose, no code fences.
 
 ```
-[
+{"verdicts": [
   { "index": 0, "safe": true },
   { "index": 1, "safe": false, "reason": "names the internal billing-worker service" },
   { "index": 2, "safe": false, "reason": "describes a parameter that is behind a feature flag" }
-]
+]}
 ```
 
 `reason` is required when `safe` is false, and is shown to the developer on their own terminal so they know what was withheld and why. Keep it to one short clause. Never quote the offending text back: it is being withheld precisely so it stops travelling.

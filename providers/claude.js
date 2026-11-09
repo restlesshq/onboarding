@@ -118,7 +118,7 @@ export default {
    *
    * `onReport` receives `{ edited, denied }` (absolute paths) when the run ends.
    */
-  async run(prompt, cwd, { onStatus, maxTurns = 30, onError, onReport, model, toolFree = false, sensitive = false } = {}) {
+  async run(prompt, cwd, { onStatus, maxTurns = 30, onError, onReport, model, toolFree = false, sensitive = false, outputFormat } = {}) {
     const log = sensitive ? () => {} : debug.log;
     const controller = new AbortController();
     const deadline = toolFree ? setTimeout(() => controller.abort(), 60_000) : null;
@@ -191,6 +191,7 @@ export default {
         options: {
           maxTurns,
           ...(model ? { model } : {}),
+          ...(outputFormat ? { outputFormat } : {}),
           ...(sensitive ? { persistSession: false } : {}),
           ...(toolFree ? { tools: [], mcpServers: {}, strictMcpConfig: true, abortController: controller, persistSession: false } : {}),
           allowedTools: toolFree ? [] : ['Read', 'Edit', 'Glob', 'Grep', 'Bash', 'Write'],
@@ -246,7 +247,13 @@ export default {
           continue;
         }
 
-        if (message.type === 'result' && message.subtype === 'success' && !message.is_error) completed = true;
+        if (message.type === 'result' && message.subtype === 'success' && !message.is_error) {
+          completed = true;
+          if (outputFormat) {
+            if (message.structured_output === undefined) runError = 'malformed-review';
+            else result = JSON.stringify(message.structured_output);
+          }
+        }
         if (message.type === 'assistant') {
           if (toolFree && message.message.model !== model) runError = 'model-mismatch';
           if (toolFree && message.message.content.some((b) => b.type === 'tool_use')) runError = 'unexpected-tool';
@@ -270,8 +277,9 @@ export default {
         } else if (message.type === 'result' && message.is_error) {
           // The SDK emits the terminal error result here just before it
           // rejects the iterator; capture the reason for the log.
-          runError =
-            message.subtype === 'success'
+          runError = sensitive
+            ? (message.subtype === 'error_max_turns' ? 'max-turns' : 'provider-failure')
+            : message.subtype === 'success'
               ? message.result
               : Array.isArray(message.errors)
                 ? message.errors.join('; ')
@@ -279,13 +287,16 @@ export default {
         }
       }
     } catch (err) {
-      runError = runError || err?.message || String(err);
+      runError = runError || (sensitive
+        ? (/maximum number of turns/i.test(err?.message || '') ? 'max-turns' : 'provider-failure')
+        : err?.message || String(err));
     }
 
     if (deadline) clearTimeout(deadline);
     if (reviewToolAttempted) runError = 'unexpected-tool';
-    if (toolFree && !completed) runError = 'incomplete-review';
-    if (sensitive && runError) runError = 'review-provider-failure';
+    if (authFailed && sensitive) runError = 'auth';
+    if (toolFree && controller.signal.aborted) runError = 'timeout';
+    if (toolFree && !completed && !runError) runError = 'incomplete-review';
     if (runError) {
       log('ai.run.error', {
         provider: 'claude',

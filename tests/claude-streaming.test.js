@@ -45,13 +45,24 @@ describe('private tool-free review', () => {
     expect(JSON.stringify(debug.snapshot())).not.toContain(secret);
   });
 
-  it('fails review on model substitution or incomplete completion', async () => {
+  it('fails a completed review on model substitution', async () => {
     queryMock.mockReturnValue(stream(
       { type: 'assistant', message: { model: 'unexpected-model', content: [{ type: 'text', text: '[]' }] } },
+      { type: 'result', subtype: 'success', is_error: false },
     ));
     const onError = vi.fn();
     await claude.run('candidate', '/tmp/proj', { model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, onError });
-    expect(onError).toHaveBeenCalledWith('review-provider-failure');
+    expect(onError).toHaveBeenCalledWith('model-mismatch');
+  });
+
+  it('distinguishes incomplete review from a sensitive extraction turn cap', async () => {
+    queryMock.mockReturnValueOnce(stream());
+    const onError = vi.fn();
+    await claude.run('candidate', '/tmp/proj', { model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, onError });
+    expect(onError).toHaveBeenLastCalledWith('incomplete-review');
+    queryMock.mockReturnValueOnce(stream({ type: 'result', subtype: 'error_max_turns', is_error: true, errors: ['synthetic-private'] }));
+    await claude.run('source', '/tmp/proj', { sensitive: true, onError });
+    expect(onError).toHaveBeenLastCalledWith('max-turns');
   });
 
   it('denies inherited MCP calls before execution without restricting normal runs', async () => {
@@ -64,7 +75,7 @@ describe('private tool-free review', () => {
     }());
     const onError = vi.fn();
     await claude.run('candidate', '/tmp/proj', { model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, onError });
-    expect(onError).toHaveBeenCalledWith('review-provider-failure');
+    expect(onError).toHaveBeenCalledWith('unexpected-tool');
     queryMock.mockReturnValue(stream({ type: 'result', subtype: 'success', is_error: false }));
     await claude.run('normal', '/tmp/proj');
     const normal = queryMock.mock.calls[1][0].options;
@@ -72,6 +83,20 @@ describe('private tool-free review', () => {
     expect(await normal.hooks.PreToolUse[0].hooks[0](tool)).toEqual({});
   });
 });
+it('uses SDK structured output instead of annotated assistant prose', async () => {
+  const outputFormat = { type: 'json_schema', schema: { type: 'object' } };
+  queryMock.mockReturnValue(stream(
+    { type: 'assistant', message: { model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'Here is the result.' }] } },
+    { type: 'result', subtype: 'success', is_error: false, structured_output: { verdicts: [] } },
+  ));
+  const onError = vi.fn();
+  expect(await claude.run('candidate', '/tmp/proj', {
+    model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, outputFormat, onError,
+  })).toBe('{"verdicts":[]}');
+  expect(queryMock.mock.calls[0][0].options.outputFormat).toEqual(outputFormat);
+  expect(onError).not.toHaveBeenCalled();
+});
+
 const delta = (partial_json) => ({
   type: 'stream_event',
   event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json } },

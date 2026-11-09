@@ -134,6 +134,14 @@ describe('inspectCandidate', () => {
     expect(verdict.safe).toBe(false);
   });
 
+  it('decodes encoded leaks despite unrelated malformed percent sequences', () => {
+    expect(inspectCandidate({ ...clean, title: '100% uptime %FF', content: 'alice%40example.org' }).safe).toBe(false);
+  });
+
+  it('accepts repository test and local-config paths without treating them as hosts', () => {
+    expect(inspectCandidate({ ...clean, files: ['src/routes/users.test.ts', 'config/env.local.js'] }).safe).toBe(true);
+  });
+
   it('screens file paths before upload', () => {
     const verdict = inspectCandidate({
       ...clean,
