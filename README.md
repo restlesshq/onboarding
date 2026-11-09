@@ -131,13 +131,9 @@ Want the guided flow instead, with the CLI doing the work? `npx restless init --
 
 # After you've claimed a project
 
-CLI 0.13.0 supports resumable knowledge screening and declares
-`restless.knowledgeResumeProtocol: 1` in its npm manifest. Release it to the npm
-`latest` tag before the coordinated server deployment. Production builds verify
-the published version and capability. A checkout or packed tarball is not a release.
 If an old installation receives `upgrade_required`, run
-`npm exec --yes --prefer-online --package=restless@latest -- restless update` to resolve the current
-package instead of reusing a locally pinned CLI.
+`npm exec --yes --prefer-online --package=restless@latest -- restless update`
+to use the current CLI package.
 
 `npx restless init` stays safe to re-run, and it notices what's already there: an API
 you've mapped is offered back to you instead of being re-scanned, and a project

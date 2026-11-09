@@ -34,7 +34,7 @@ afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-let server, saved, projects, startBody, claimReply, claimBody, claimCalls, claimBodies;
+let server, saved, projects, startBody, claimReply, claimBody, claimCalls, claimBodies, claimHeaders;
 beforeEach(async () => {
   calls.length = 0;
   picked.items = null;
@@ -43,6 +43,7 @@ beforeEach(async () => {
   claimBody = null;
   claimCalls = 0;
   claimBodies = [];
+  claimHeaders = [];
   claimReply = { status: 200, body: { claimed: true, project_slug: 'acme-api', user_email: 'me@acme.com' } };
   projects = [];
   saved = { ...process.env };
@@ -55,6 +56,7 @@ beforeEach(async () => {
       req.on('end', () => {
         claimBody = JSON.parse(raw);
         claimBodies.push(claimBody);
+        claimHeaders.push(req.headers['x-restless-knowledge-resume']);
         claimCalls += 1;
         // An array is one reply per call, in order.
         const reply = Array.isArray(claimReply) ? claimReply[claimCalls - 1] : claimReply;
@@ -75,6 +77,7 @@ beforeEach(async () => {
     }
     res.end('{}');
   });
+
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   process.env.RESTLESS_SITE_URL = `http://127.0.0.1:${server.address().port}`;
   vi.resetModules();
@@ -163,6 +166,19 @@ describe('claimWithSession', () => {
     saveAccountToken({ token: 'sess', expiresAt: new Date(Date.now() + 3_600_000).toISOString(), email: 'me@acme.com' });
   };
 
+  it('reports ownership without completed spec publication for a terminal rejected stage', async () => {
+    await saveSession();
+    claimReply = { status: 422, body: {
+      error: 'spec_rejected', code: 'spec_rejected', claimed: true, project_slug: 'acme-api',
+      message: 'synthetic-private-provider-body',
+    } };
+    const { claimWithSession } = await import('../lib/context-auth.js');
+    const result = await claimWithSession({ projectId: 'p1', setupKey: 'sk' });
+    expect(result).toEqual({ ok: false, reason: 'spec_rejected', claimed: true, slug: 'acme-api' });
+    expect(claimCalls).toBe(1);
+    expect(JSON.stringify(result)).not.toContain('synthetic-private');
+  });
+
   it('claims with the cached session and the setup key', async () => {
     await saveSession();
     const { claimWithSession } = await import('../lib/context-auth.js');
@@ -170,6 +186,7 @@ describe('claimWithSession', () => {
     expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk' }))
       .toEqual({ ok: true, email: 'me@acme.com', slug: 'acme-api' });
     expect(claimBody).toEqual({ token: 'sess', project_id: 'p1', setup_key: 'sk' });
+    expect(claimHeaders).toEqual(['1']);
   });
 
   it('without a cached session, asks the server nothing', async () => {
@@ -191,6 +208,7 @@ describe('claimWithSession', () => {
       .toEqual({ ok: true, email: 'me@acme.com', slug: 'acme-api' });
     expect(claimCalls).toBe(3);
     expect(claimBodies).toEqual(Array(3).fill({ token: 'sess', project_id: 'p1', setup_key: 'sk' }));
+    expect(claimHeaders).toEqual(['1', '1', '1']);
   });
 
   it.each([

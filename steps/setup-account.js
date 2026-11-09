@@ -35,9 +35,13 @@ async function pollForAuth(token, signal, waitMs = CLAIM_WAIT_MS) {
   while (!signal?.aborted && Date.now() < deadline) {
     try {
       const res = await fetch(pollUrl, { signal });
-      if (res.ok) {
+      if (res.ok || res.status === 422) {
         const data = await res.json();
         if (data.status === 'complete') return data;
+        if (res.status === 422 && data.status === 'spec_rejected' && data.claimed === true
+          && typeof data.slug === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(data.slug)) {
+          return { status: 'spec_rejected', claimed: true, slug: data.slug };
+        }
       }
     } catch {
       if (signal?.aborted) return null;
@@ -164,6 +168,15 @@ export default async function setupAccount({
     return { apiKey };
   }
   const endpointCount = artifacts.endpoints;
+  const rejectedSpec = ({ slug }) => {
+    update({ status: 'failed', sub: { 0: 'failed', 1: 'done' }, message: [
+      `  ${red('✗')} Project claimed, spec rejected. The staged spec was not published.`,
+      '  Upload a clean replacement from your project:',
+      `    ${cyan(`${SITE_URL}/api/${encodeURIComponent(slug)}`)}`,
+    ] });
+    debug.markUnfinished('your project was claimed but the staged spec was rejected');
+    return { apiKey, claimed: true, slug, specRejected: true };
+  };
 
   // ── Already claimed: nothing left to do here ────────────────────
   // Everything below this point is the claim ceremony, and all of it
@@ -219,6 +232,7 @@ export default async function setupAccount({
   const direct = await claimWithSession({ projectId, setupKey, token: sessionToken });
   setSpinner?.('');
   debug.log('setup-account.direct-claim', { ok: direct.ok, reason: direct.reason });
+  if (direct.reason === 'spec_rejected' && direct.claimed) return rejectedSpec(direct);
   if (direct.ok) {
     update({ sub: { 0: 'done', 1: 'done' }, status: 'done', message: [
       ...celebrationBanner(`🎉  ${bold('Setup complete')}: your API is on Restless`),
@@ -351,6 +365,7 @@ export default async function setupAccount({
     return { apiKey };
   }
 
+  if (result.status === 'spec_rejected') return rejectedSpec(result);
   const { email, slug } = result;
 
   update({ sub: { 0: 'done', 1: 'done' }, status: 'done', message: [
