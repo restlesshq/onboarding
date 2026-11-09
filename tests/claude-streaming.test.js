@@ -21,6 +21,13 @@ const blockStart = (name) => ({
 });
 
 describe('private tool-free review', () => {
+  it('does not persist a source-reading extraction session', async () => {
+    queryMock.mockReturnValue(stream({ type: 'result', subtype: 'success', is_error: false }));
+    await claude.run('source-private', '/tmp/proj', { model: 'claude-haiku-5-5', sensitive: true });
+    expect(queryMock.mock.calls[0][0].options.persistSession).toBe(false);
+    expect(queryMock.mock.calls[0][0].options.allowedTools).toContain('Read');
+  });
+
   it('pins the requested model and disables tools, sessions and payload debug logs', async () => {
     const debug = await import('../lib/debug.js');
     debug.init({ argv: ['node', 'restless', 'context'] });

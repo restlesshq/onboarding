@@ -182,6 +182,7 @@ export default {
         options: {
           maxTurns,
           ...(model ? { model } : {}),
+          ...(sensitive ? { persistSession: false } : {}),
           ...(toolFree ? { tools: [], mcpServers: {}, abortController: controller, persistSession: false } : {}),
           allowedTools: toolFree ? [] : ['Read', 'Edit', 'Glob', 'Grep', 'Bash', 'Write'],
           cwd,
