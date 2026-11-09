@@ -118,7 +118,11 @@ export default {
    *
    * `onReport` receives `{ edited, denied }` (absolute paths) when the run ends.
    */
-  async run(prompt, cwd, { onStatus, maxTurns = 30, onError, onReport } = {}) {
+  async run(prompt, cwd, { onStatus, maxTurns = 30, onError, onReport, model, toolFree = false, sensitive = false } = {}) {
+    const log = sensitive ? () => {} : debug.log;
+    const controller = new AbortController();
+    const deadline = toolFree ? setTimeout(() => controller.abort(), 60_000) : null;
+    let completed = false;
     let result = '';
     // Counts so the debug log answers "did the AI actually write?" in a
     // single line. Useful post-mortem when install-sdk later finds nothing
@@ -135,7 +139,7 @@ export default {
       if (!verdict) return {};
       deniedIds.add(input.tool_use_id);
       denied.push(verdict.path);
-      debug.log('ai.tool.denied', { tool: input.tool_name, path: verdict.path, reason: verdict.owner ? 'other-checkout' : 'outside-project' });
+      log('ai.tool.denied', { tool: input.tool_name, path: verdict.path, reason: verdict.owner ? 'other-checkout' : 'outside-project' });
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -144,7 +148,7 @@ export default {
         },
       };
     };
-    debug.log('ai.run.start', {
+    log('ai.run.start', {
       provider: 'claude',
       cwd,
       gitRoot,
@@ -177,7 +181,9 @@ export default {
         prompt,
         options: {
           maxTurns,
-          allowedTools: ['Read', 'Edit', 'Glob', 'Grep', 'Bash', 'Write'],
+          ...(model ? { model } : {}),
+          ...(toolFree ? { tools: [], mcpServers: {}, abortController: controller, persistSession: false } : {}),
+          allowedTools: toolFree ? [] : ['Read', 'Edit', 'Glob', 'Grep', 'Bash', 'Write'],
           cwd,
           // A hook, not `canUseTool`: allowedTools auto-approve and never reach
           // canUseTool, so a guard there never ran for Edit/Write/Bash.
@@ -210,7 +216,7 @@ export default {
         // exactly like a slow model. A profiled run had one unexplained 49.5s
         // gap; this is the event that would have named it.
         if (message.type === 'system' && message.subtype === 'api_retry') {
-          debug.log('ai.api-retry', {
+          log('ai.api-retry', {
             attempt: message.attempt,
             maxRetries: message.max_retries,
             retryDelayMs: message.retry_delay_ms,
@@ -230,16 +236,19 @@ export default {
           continue;
         }
 
+        if (message.type === 'result' && message.subtype === 'success' && !message.is_error) completed = true;
         if (message.type === 'assistant') {
+          if (toolFree && message.message.model !== model) runError = 'model-mismatch';
+          if (toolFree && message.message.content.some((b) => b.type === 'tool_use')) runError = 'unexpected-tool';
           if (message.error === 'authentication_failed') authFailed = true;
           for (const block of message.message.content) {
             if (block.type === 'text') {
               result += block.text;
               onStatus?.({ phase: 'Analyzing', detail: 'Thinking…' });
-              debug.log('ai.text', { text: truncate(block.text, MAX_AI_TEXT) });
+              log('ai.text', { text: truncate(block.text, MAX_AI_TEXT) });
             } else if (block.type === 'tool_use') {
               onStatus?.(describeToolUse(block.name, block.input));
-              debug.log('ai.tool_use', { tool: block.name, input: truncatedToolInput(block.input) });
+              log('ai.tool_use', { tool: block.name, input: truncatedToolInput(block.input) });
               const file = block.input?.file_path || block.input?.notebook_path;
               if (['Edit', 'Write', 'NotebookEdit'].includes(block.name) && typeof file === 'string') {
                 editPaths.set(block.id, path.resolve(cwd || '.', file));
@@ -263,15 +272,18 @@ export default {
       runError = runError || err?.message || String(err);
     }
 
+    if (deadline) clearTimeout(deadline);
+    if (toolFree && !completed) runError = 'incomplete-review';
+    if (sensitive && runError) runError = 'review-provider-failure';
     if (runError) {
-      debug.log('ai.run.error', {
+      log('ai.run.error', {
         provider: 'claude',
         message: runError,
         resultChars: result.length,
       });
       onError?.(runError);
     }
-    debug.log('ai.run.end', {
+    log('ai.run.end', {
       provider: 'claude',
       resultChars: result.length,
       toolCounts,

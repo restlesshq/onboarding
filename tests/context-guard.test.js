@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { inspectCandidate, screenCandidates } from '../lib/context-guard.js';
+import { inspectCandidate, screenCandidates, contextModels } from '../lib/context-guard.js';
 
 /**
  * These are the rules that stop a private repo's contents reaching a public
@@ -134,12 +134,12 @@ describe('inspectCandidate', () => {
     expect(verdict.safe).toBe(false);
   });
 
-  it('ignores file paths, which never reach the public docs', () => {
+  it('screens file paths before upload', () => {
     const verdict = inspectCandidate({
       ...clean,
-      files: ['src/internal/admin/TODO-cleanup.ts', 'src/staging.config.ts'],
+      files: ['customers/alice@example.org.ts'],
     });
-    expect(verdict.safe).toBe(true);
+    expect(verdict.safe).toBe(false);
   });
 
   it('collects every reason, not just the first', () => {
@@ -176,5 +176,20 @@ describe('screenCandidates', () => {
 
   it('handles an empty batch', () => {
     expect(screenCandidates([])).toEqual({ safe: [], withheld: [] });
+  });
+});
+
+describe('independent local models', () => {
+  const env = { RESTLESS_CONTEXT_EXTRACTION_MODEL: 'claude-haiku-5-5', RESTLESS_CONTEXT_REVIEW_MODEL: 'claude-sonnet-5-5' };
+  it('selects different explicit supported model identities', () => {
+    expect(contextModels('claude', env)).toEqual({ extraction: 'claude-haiku-5-5', review: 'claude-sonnet-5-5' });
+  });
+  it('fails closed for missing configuration, same models and unsupported providers', () => {
+    expect(() => contextModels('claude', {})).toThrow();
+    expect(() => contextModels('claude', { ...env, RESTLESS_CONTEXT_REVIEW_MODEL: env.RESTLESS_CONTEXT_EXTRACTION_MODEL })).toThrow();
+    expect(() => contextModels('codex', env)).toThrow();
+  });
+  it.each(['title', 'description', 'content', 'docsBody', 'endpoint', 'icon'])('checks encoded sensitive %s before upload', (field) => {
+    expect(inspectCandidate({ ...clean, [field]: 'alice%40example.org' }).safe).toBe(false);
   });
 });

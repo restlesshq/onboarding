@@ -19,6 +19,34 @@ const blockStart = (name) => ({
   type: 'stream_event',
   event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', name } },
 });
+
+describe('private tool-free review', () => {
+  it('pins the requested model and disables tools, sessions and payload debug logs', async () => {
+    const debug = await import('../lib/debug.js');
+    debug.init({ argv: ['node', 'restless', 'context'] });
+    const secret = 'synthetic-private-candidate';
+    queryMock.mockReturnValue(stream(
+      { type: 'assistant', message: { model: 'claude-sonnet-5-5', content: [{ type: 'text', text: secret }] } },
+      { type: 'result', subtype: 'success', is_error: false },
+    ));
+    const onError = vi.fn();
+    await claude.run(secret, '/tmp/proj', { model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, onError });
+    expect(queryMock.mock.calls[0][0].options).toMatchObject({
+      model: 'claude-sonnet-5-5', tools: [], allowedTools: [], mcpServers: {}, persistSession: false,
+    });
+    expect(onError).not.toHaveBeenCalled();
+    expect(JSON.stringify(debug.snapshot())).not.toContain(secret);
+  });
+
+  it('fails review on model substitution or incomplete completion', async () => {
+    queryMock.mockReturnValue(stream(
+      { type: 'assistant', message: { model: 'unexpected-model', content: [{ type: 'text', text: '[]' }] } },
+    ));
+    const onError = vi.fn();
+    await claude.run('candidate', '/tmp/proj', { model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, onError });
+    expect(onError).toHaveBeenCalledWith('review-provider-failure');
+  });
+});
 const delta = (partial_json) => ({
   type: 'stream_event',
   event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json } },

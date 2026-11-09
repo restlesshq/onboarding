@@ -1,12 +1,12 @@
 import {
   bold, dim, cyan, green, red, yellow, white, muted, askYesNo, startSpinner,
 } from '../lib/ui.js';
-import { runAI, loadPrompt } from '../lib/ai.js';
+import { runAI, loadPrompt, getProvider } from '../lib/ai.js';
 import { extractJson } from '../lib/extract-json.js';
 import { CLI_NAME } from '../lib/config.js';
 import { isInteractive } from '../lib/env.js';
 import { describeRepo, changedSince, hasUncommittedChanges } from '../lib/context-repo.js';
-import { screenCandidates } from '../lib/context-guard.js';
+import { screenCandidates, contextModels } from '../lib/context-guard.js';
 import { fetchScope, pushCandidates } from '../lib/context-sync.js';
 import { buildPlan } from '../lib/context-plan.js';
 import { loadSettings, findApiEntry } from '../lib/settings.js';
@@ -281,17 +281,10 @@ function normalizeCandidate(raw) {
  * withhold everything rather than fall back to "probably fine": the entire
  * value of a leak check is that it is not optional when it is inconvenient.
  */
-async function reviewForLeaks(candidates, cwd, { setSpinner } = {}) {
+async function reviewForLeaks(candidates, cwd, { setSpinner, model } = {}) {
   const prompt = loadPrompt('review-context', {
     candidates: JSON.stringify(
-      candidates.map((c, i) => ({
-        index: i,
-        target: c.target,
-        title: c.title,
-        content: c.content,
-        ...(c.description ? { description: c.description } : {}),
-        ...(c.docsBody ? { docsBody: c.docsBody } : {}),
-      })),
+      candidates.map((c, i) => ({ ...c, index: i })),
       null,
       2,
     ),
@@ -303,10 +296,11 @@ async function reviewForLeaks(candidates, cwd, { setSpinner } = {}) {
     const raw = await runAI(prompt, cwd, {
       setSpinner,
       label: 'review-context',
+      model, toolFree: true, sensitive: true,
       maxTurns: MAX_TURNS_REVIEW,
       onError: (err) => { reviewError = err; },
     });
-    verdicts = extractJson(raw);
+    verdicts = JSON.parse(raw);
   } catch (err) {
     reviewError = err.message;
   }
@@ -314,13 +308,17 @@ async function reviewForLeaks(candidates, cwd, { setSpinner } = {}) {
   if (reviewError) {
     return { ok: false, error: `The redaction pass couldn't run (${reviewError}).` };
   }
-  if (!Array.isArray(verdicts)) {
+  if (!Array.isArray(verdicts) || verdicts.length !== candidates.length) {
     return { ok: false, error: "The redaction pass didn't return a verdict we could read." };
   }
 
   const byIndex = new Map();
   for (const v of verdicts) {
-    if (v && typeof v.index === 'number') byIndex.set(v.index, v);
+    if (!v || !Number.isInteger(v.index) || v.index < 0 || v.index >= candidates.length || byIndex.has(v.index)
+      || typeof v.safe !== 'boolean' || Object.keys(v).some((k) => !['index', 'safe', 'reason'].includes(k))) {
+      return { ok: false, error: 'The review returned an invalid verdict.' };
+    }
+    byIndex.set(v.index, v);
   }
 
   const safe = [];
@@ -365,6 +363,9 @@ function reportWithheld(withheld) {
  * account session. Returns an exit code.
  */
 export default async function contextStep({ project, token, cwd, cliVersion, yes = false, dryRun = false, full = false }) {
+  let models;
+  try { models = contextModels(getProvider().name); }
+  catch (error) { console.log(red(error.message)); return 1; }
   const repo = describeRepo(cwd);
 
   console.log('');
@@ -547,6 +548,7 @@ export default async function contextStep({ project, token, cwd, cliVersion, yes
       raw = await runAI(prompt, cwd, {
         label: `extract-context:${name}`,
         maxTurns: MAX_TURNS_PER_BATCH,
+        model: models.extraction, sensitive: true,
         onError: (err) => { runError = err; },
         setSpinner: (s) => spinner.update(
           `${name} (${i + 1}/${passes.length}) ${typeof s === 'string' ? s : s?.detail || ''}`,
@@ -616,6 +618,7 @@ export default async function contextStep({ project, token, cwd, cliVersion, yes
   if (sendable.length) {
     const reviewSpinner = startSpinner('Second pass: checking nothing internal leaked');
     const review = await reviewForLeaks(sendable, cwd, {
+      model: models.review,
       setSpinner: (s) => reviewSpinner.update(typeof s === 'string' ? s : s?.detail || ''),
     });
     reviewSpinner.stop();
