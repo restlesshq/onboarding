@@ -151,6 +151,38 @@ describe('inspectCandidate', () => {
   });
 });
 
+describe('inspectCandidate: obfuscated, encoded and personal data', () => {
+  const fake = (...parts) => parts.join('');
+  const email = fake('priya', '@', 'acme-corp', '.io');
+
+  it.each([
+    ['a spelled-out email', 'Write to priya dot shah at acme dot com for access.'],
+    ['a bracketed email', 'Write to priya[at]acme[dot]com for access.'],
+    ['a zero-width split email', `Write to ${email.replace('@', '\u200B@\u200B')}.`],
+    ['a full-width email', 'Write to ｐｒｉｙａ＠ａｃｍｅ．ｃｏｍ today.'],
+    ['a base64 email', `Payload ${Buffer.from(email).toString('base64')} is decoded server side.`],
+    ['a hex email', `Payload ${Buffer.from(email).toString('hex')} is decoded server side.`],
+    ['a percent-encoded email', 'Payload priya%40acme%2Ecom is decoded server side.'],
+    ['a phone number', 'Call +1 (415) 555-2671 to raise the limit.'],
+    ['a national ID', 'The holder SSN 123-45-6789 is attached.'],
+    ['a card number', 'Card 4111 1111 1111 1111 was declined in the test.'],
+    ['an IBAN', 'Payouts go to DE89 3704 0044 0532 0130 00.'],
+    ['URL credentials', 'Fetch https://bot:s3cretpass@api.acme.com/v1/export nightly.'],
+    ['an Anthropic key', `Set ${fake('sk', '-ant-', 'api03-', 'abcdefghijklmnop')} in the env.`],
+    ['a high-entropy token', `Use ${fake('q8Zr2LmX9vKp', '4TnW7bYc1HsJ6dFg3Ae5')} as the seed.`],
+  ])('rejects %s', (_label, content) => {
+    expect(inspectCandidate({ title: 'Data', content }).safe).toBe(false);
+  });
+
+  it.each([
+    ['an RFC 2606 example address', 'Use user@example.com as the sandbox login.'],
+    ['an ISO date', 'Removed after 2027-01-01.'],
+    ['a long identifier', 'Call getOrganizationMembersByRole to list members.'],
+  ])('passes %s', (_label, content) => {
+    expect(inspectCandidate({ title: 'Docs', content }).safe).toBe(true);
+  });
+});
+
 describe('screenCandidates', () => {
   it('splits a batch and reports titles + reasons for what it held back', () => {
     const { safe, withheld } = screenCandidates([
