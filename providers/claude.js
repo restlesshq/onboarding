@@ -135,8 +135,12 @@ export default {
     const deniedIds = new Set(); // refused by the guard, or failed
     const denied = [];
     let reviewToolAttempted = false;
+    const schemaTransport = (name) => name === 'StructuredOutput' && outputFormat?.type === 'json_schema';
     const preToolUse = async (input) => {
       if (toolFree) {
+        if (schemaTransport(input.tool_name)) return { hookSpecificOutput: {
+          hookEventName: 'PreToolUse', permissionDecision: 'allow',
+        } };
         reviewToolAttempted = true;
         return { hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -256,7 +260,7 @@ export default {
         }
         if (message.type === 'assistant') {
           if (toolFree && message.message.model !== model) runError = 'model-mismatch';
-          if (toolFree && message.message.content.some((b) => b.type === 'tool_use')) runError = 'unexpected-tool';
+          if (toolFree && message.message.content.some((b) => b.type === 'tool_use' && !schemaTransport(b.name))) runError = 'unexpected-tool';
           if (message.error === 'authentication_failed') authFailed = true;
           for (const block of message.message.content) {
             if (block.type === 'text') {

@@ -82,6 +82,39 @@ describe('private tool-free review', () => {
     expect(normal.strictMcpConfig).not.toBe(true);
     expect(await normal.hooks.PreToolUse[0].hooks[0](tool)).toEqual({});
   });
+
+  it('accepts only the schema transport tool during a structured safety review', async () => {
+    const outputFormat = { type: 'json_schema', schema: { type: 'object' } };
+    queryMock.mockImplementationOnce(({ options }) => async function* () {
+      const hook = options.hooks.PreToolUse[0].hooks[0];
+      expect(await hook({ tool_name: 'StructuredOutput', tool_input: { verdicts: [] }, tool_use_id: 'schema' }))
+        .toMatchObject({ hookSpecificOutput: { permissionDecision: 'allow' } });
+      yield { type: 'assistant', message: { model: 'claude-sonnet-5-5', content: [
+        { type: 'tool_use', name: 'StructuredOutput', input: { verdicts: [] } },
+      ] } };
+      yield { type: 'result', subtype: 'success', is_error: false, structured_output: { verdicts: [] } };
+    }());
+    const onError = vi.fn();
+    expect(await claude.run('candidate', '/tmp/proj', {
+      model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, outputFormat, onError,
+    })).toBe('{"verdicts":[]}');
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it.each(['Read', 'mcp__inherited__publish', 'StructuredOutput'])(
+    'rejects an assistant tool block without a matching schema transport grant: %s',
+    async (name) => {
+      queryMock.mockReturnValueOnce(stream(
+        { type: 'assistant', message: { model: 'claude-sonnet-5-5', content: [{ type: 'tool_use', name, input: {} }] } },
+        { type: 'result', subtype: 'success', is_error: false },
+      ));
+      const onError = vi.fn();
+      await claude.run('candidate', '/tmp/proj', {
+        model: 'claude-sonnet-5-5', toolFree: true, sensitive: true, onError,
+      });
+      expect(onError).toHaveBeenCalledWith('unexpected-tool');
+    },
+  );
 });
 it('uses SDK structured output instead of annotated assistant prose', async () => {
   const outputFormat = { type: 'json_schema', schema: { type: 'object' } };
