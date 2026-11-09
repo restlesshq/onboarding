@@ -203,7 +203,7 @@ export async function reportStatus({ rootDir, apiEntry, json }) {
  * reach the dashboard never loses them - and the result says which of the two
  * happened rather than collapsing both into "failed".
  */
-export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, flags, signal }) {
+export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, flags, startSync }) {
   const { json } = flags;
 
   // Read-only, and deliberately first: `--status` must work with no
@@ -330,10 +330,6 @@ export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, fla
   // scripted run on that for ten minutes is worse than reporting that the
   // local edits landed and the sync didn't.
   const tokenRes = await getCliToken({ projectId: apiEntry.projectId, interactive: false });
-  if (signal?.aborted) {
-    report({ json, ok: false, ...out, cancelled: true, error: 'Sync cancelled.', lines: [red('  Sync cancelled.')] });
-    return 130;
-  }
   if (!tokenRes.ok) {
     out.error = tokenRes.error;
     lines.push(
@@ -347,14 +343,20 @@ export default async function runFlagUpdate({ rootDir, packageDir, apiEntry, fla
   }
 
   let pendingReported = false;
-  const res = await syncProject({
-    rootDir, apiEntry, oasFile: specFile, token: tokenRes.token,
-    signal,
-    onPending: () => {
-      if (!json && !pendingReported) console.log(dim('  Screening the spec before publication. This can take several minutes. Ctrl-C stops waiting.'));
-      pendingReported = true;
-    },
-  });
+  const sync = startSync?.();
+  let res;
+  try {
+    res = await syncProject({
+      rootDir, apiEntry, oasFile: specFile, token: tokenRes.token,
+      signal: sync?.signal,
+      onPending: () => {
+        if (!json && !pendingReported) console.log(dim('  Screening the spec before publication. This can take several minutes. Ctrl-C stops waiting.'));
+        pendingReported = true;
+      },
+    });
+  } finally {
+    sync?.finish();
+  }
   out.specSynced = res.specSynced;
   out.synced = res.settingsSynced;
   if (res.specSynced) {

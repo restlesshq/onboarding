@@ -55,12 +55,8 @@ function repaintHeader(apiEntry) {
  * can't get is a partial success, not a failure: the local edits are already
  * saved, and exiting non-zero would tell a script the change didn't happen.
  */
-async function publish({ rootDir, apiEntry, oasFile = null, signal }) {
+async function publish({ rootDir, apiEntry, oasFile = null, startSync }) {
   const tokenRes = await getCliToken({ projectId: apiEntry.projectId, interactive: isInteractive() });
-  if (signal?.aborted) {
-    console.log(red('  Sync cancelled.'));
-    return 130;
-  }
   if (!tokenRes.ok) {
     console.log('');
     console.log(`  ${yellow('!')} Saved locally but not synced: ${tokenRes.error}`);
@@ -72,13 +68,19 @@ async function publish({ rootDir, apiEntry, oasFile = null, signal }) {
   console.log('');
   if (oasFile) console.log(dim(`  Pushing ${oasFile} to ${SITE_URL}...`));
   let pendingReported = false;
-  const res = await syncProject({
-    rootDir, apiEntry, oasFile, token: tokenRes.token, signal,
-    onPending: () => {
-      if (!pendingReported) console.log(dim('  Screening the spec before publication. This can take several minutes. Ctrl-C stops waiting.'));
-      pendingReported = true;
-    },
-  });
+  const sync = startSync?.();
+  let res;
+  try {
+    res = await syncProject({
+      rootDir, apiEntry, oasFile, token: tokenRes.token, signal: sync?.signal,
+      onPending: () => {
+        if (!pendingReported) console.log(dim('  Screening the spec before publication. This can take several minutes. Ctrl-C stops waiting.'));
+        pendingReported = true;
+      },
+    });
+  } finally {
+    sync?.finish();
+  }
 
   if (res.specSynced) {
     console.log(`  ${green('✓')} Spec synced${res.endpoints !== null ? dim(` (${res.endpoints} endpoints)`) : ''}.`);
@@ -110,7 +112,7 @@ async function publish({ rootDir, apiEntry, oasFile = null, signal }) {
  *   { note: lines }    nothing conclusive; show these above the menu
  *   { editSettings }   the developer asked for the settings editor
  */
-async function openingCheck({ rootDir, packageDir, apiEntry, signal }) {
+async function openingCheck({ rootDir, packageDir, apiEntry, startSync }) {
   repaintHeader(apiEntry);
   const facets = oasSourceFacets(apiEntry.oasSource?.kind);
 
@@ -155,7 +157,7 @@ async function openingCheck({ rootDir, packageDir, apiEntry, signal }) {
     }
     const oasFile = applySpecChange({ rootDir, check });
     recordSpec({ rootDir, apiEntry, oasFile, oasSource: check.oasSource });
-    return { done: await publish({ rootDir, apiEntry, oasFile, signal }) };
+    return { done: await publish({ rootDir, apiEntry, oasFile, startSync }) };
   }
 
   // Nothing staged, so nothing to discard. Anything below is either "push what
@@ -178,7 +180,7 @@ async function openingCheck({ rootDir, packageDir, apiEntry, signal }) {
     console.log(`  ${dim(`Your local ${apiEntry.oasFile} is ${check.kind === 'failed' ? 'unchanged as far as we know' : 'already up to date'}.`)}`);
     console.log('');
     if (await askYesNo(`  ${bold('Push it to the dashboard?')} ${dim('(Y/n) ')}`, { defaultValue: true })) {
-      return { done: await publish({ rootDir, apiEntry, oasFile: apiEntry.oasFile, signal }) };
+      return { done: await publish({ rootDir, apiEntry, oasFile: apiEntry.oasFile, startSync }) };
     }
     return { note: [] };
   }
@@ -316,7 +318,7 @@ async function chatEdit({ rootDir, settings, apiEntry }) {
  * navigating to one and pressing Enter opens an inline editor. Submit ends the
  * loop and continues to the sync.
  */
-async function editSettings({ rootDir, apiEntry: chosenApi, signal }) {
+async function editSettings({ rootDir, apiEntry: chosenApi, startSync }) {
   // Re-find the entry inside a loaded settings object so mutations propagate
   // into the structure we save.
   const settings = loadSettings(rootDir);
@@ -413,20 +415,20 @@ async function editSettings({ rootDir, apiEntry: chosenApi, signal }) {
     if (servers.push) oasFile = servers.oasFile;
   }
 
-  return publish({ rootDir, apiEntry: chosenApi, oasFile, signal });
+  return publish({ rootDir, apiEntry: chosenApi, oasFile, startSync });
 }
 
 /**
  * Run the interactive update. Returns the process exit code.
  */
-export default async function runInteractiveUpdate({ rootDir, packageDir, apiEntry, signal }) {
+export default async function runInteractiveUpdate({ rootDir, packageDir, apiEntry, startSync }) {
   let note = [];
   let straightToSettings = false;
 
   // Only kinds with a source to go back to can be checked before we ask
   // anything; the rest need an explicit decision, which the menu below is.
   if (apiEntry.oasFile && oasSourceFacets(apiEntry.oasSource?.kind).autoCheck) {
-    const opened = await openingCheck({ rootDir, packageDir, apiEntry, signal });
+    const opened = await openingCheck({ rootDir, packageDir, apiEntry, startSync });
     if (opened.done !== undefined) return opened.done;
     if (opened.editSettings) straightToSettings = true;
     note = opened.note || [];
@@ -462,10 +464,10 @@ export default async function runInteractiveUpdate({ rootDir, packageDir, apiEnt
         console.log('');
         return 0;
       }
-      return publish({ rootDir, apiEntry, oasFile: res.oasFile, signal });
+      return publish({ rootDir, apiEntry, oasFile: res.oasFile, startSync });
     }
   }
 
   debug.log('update.edit-settings', { projectId: apiEntry.projectId });
-  return editSettings({ rootDir, apiEntry, signal });
+  return editSettings({ rootDir, apiEntry, startSync });
 }

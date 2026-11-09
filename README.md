@@ -260,13 +260,30 @@ The CLI sends the raw spec once, then polls with its session and an opaque
 screening ID. If the server replaces that ID, polling uses the replacement.
 Each request has a 70-second timeout; the total wait is limited to two hours.
 Only pending responses are polled again. Other HTTP errors stop the update.
+Authenticated gzip uploads also stop on HTTP 400 or 415; they do not resend the
+raw spec. Anonymous staging keeps its gzip compatibility fallback. Spec upload
+and screening errors use fixed messages, not raw response or exception text.
 
-Ctrl-C stops waiting and exits with code 130. It does not cancel work already
-running on the server. No further polling or settings sync starts after the CLI
-observes cancellation. Local edits remain saved. With `--json`, an interrupted
-or timed-out screening reports `ok: false`, `specSynced: false`, and, when known,
-`pending: true`, `screening_id`, and `retry_after_ms`. This context contains no
-session token or spec content, and is not evidence that publication completed.
+During sync, Ctrl-C stops waiting and exits with code 130. It does not cancel
+work already running on the server. No further polling or settings sync starts
+after the CLI observes cancellation. Local edits remain saved. Before sync,
+editing and browser authorization keep their normal immediate abort behavior;
+these paths do not promise a screening JSON result.
+A second Ctrl-C during sync forces exit 130 and can interrupt the JSON result.
+
+With `--json`, sync emits one result:
+- Approval followed by settings sync reports `ok: true`, `specSynced: true`,
+  `synced: true`, and exits 0.
+- Ctrl-C during screening reports `ok: false`, `cancelled: true`,
+  `specSynced: false`, `synced: false`, and exits 130.
+- A screening timeout or error reports `ok: false`, `specSynced: false`,
+  `synced: false`, and exits 1.
+
+Cancellation and timeout include `pending: true`, `screening_id`, and
+`retry_after_ms` when known. This context contains no session token or spec
+content, and is not evidence that publication completed. If the spec was
+approved before settings sync failed or was cancelled, `specSynced` stays
+`true`, `synced` is `false`, and the exit code is 1 or 130, respectively.
 
 Unclaimed setup still uploads to private staging without running paid screening
 in the anonymous request. Screening is required before that staged spec can be

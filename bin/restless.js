@@ -139,6 +139,7 @@ let updateAbortController = null;
 process.on('SIGINT', () => {
   if (updateAbortController) {
     telemetryExit.outcome = 'interrupted';
+    if (updateAbortController.signal.aborted) process.exit(130);
     updateAbortController.abort();
     return;
   }
@@ -2582,24 +2583,29 @@ if (command === '--version' || command === '-v' || command === 'version') {
   // ── Run it ─────────────────────────────────────────────────────────
   // Flags mean "do exactly this, don't ask me", which is the only form a
   // coding agent or a CI job can drive. Otherwise there is a human here.
-  updateAbortController = updateFlags?.status ? null : new AbortController();
+  const startSync = () => {
+    updateAbortController = new AbortController();
+    return {
+      signal: updateAbortController.signal,
+      finish: () => { updateAbortController = null; },
+    };
+  };
   const updateCode = updateFlags
     ? await runFlagUpdate({
       rootDir: updateRoot,
       packageDir: updatePkgDir,
       apiEntry: chosenApi,
       flags: updateFlags,
-      signal: updateAbortController?.signal,
+      startSync,
     })
     : await runInteractiveUpdate({
       rootDir: updateRoot,
       packageDir: updatePkgDir,
       apiEntry: chosenApi,
-      signal: updateAbortController?.signal,
+      startSync,
     });
-  const updateCancelled = updateAbortController?.signal.aborted;
-  updateAbortController = null;
-  if (updateCancelled) await debug.abortExit(130);
+  if (updateFlags?.json) debug.skipReport('update: JSON result');
+  if (updateCode === 130) await debug.abortExit(130);
   else await debug.flushAndExit(updateCode);
 } else if (command === 'context') {
   // ── npx restless context ───────────────────────────────────────────────
