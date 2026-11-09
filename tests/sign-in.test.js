@@ -34,7 +34,7 @@ afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-let server, saved, projects, startBody, claimReply, claimBody, claimCalls;
+let server, saved, projects, startBody, claimReply, claimBody, claimCalls, claimBodies;
 beforeEach(async () => {
   calls.length = 0;
   picked.items = null;
@@ -42,6 +42,7 @@ beforeEach(async () => {
   startBody = null;
   claimBody = null;
   claimCalls = 0;
+  claimBodies = [];
   claimReply = { status: 200, body: { claimed: true, project_slug: 'acme-api', user_email: 'me@acme.com' } };
   projects = [];
   saved = { ...process.env };
@@ -53,6 +54,7 @@ beforeEach(async () => {
       req.on('data', (c) => { raw += c; });
       req.on('end', () => {
         claimBody = JSON.parse(raw);
+        claimBodies.push(claimBody);
         claimCalls += 1;
         // An array is one reply per call, in order.
         const reply = Array.isArray(claimReply) ? claimReply[claimCalls - 1] : claimReply;
@@ -80,6 +82,7 @@ beforeEach(async () => {
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 });
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   process.env = saved;
   await new Promise((r) => server.close(r));
@@ -173,6 +176,110 @@ describe('claimWithSession', () => {
     const { claimWithSession } = await import('../lib/context-auth.js');
     expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk' })).toMatchObject({ ok: false, reason: 'no-session' });
     expect(claimBody).toBeNull();
+  });
+
+  it('waits through pending screening before completing the direct claim', async () => {
+    await saveSession();
+    claimReply = [
+      { status: 202, body: { error: 'pending', pending: true, retry_after_ms: 1000 } },
+      { status: 202, body: { error: 'pending', pending: true, retry_after_ms: 1000 } },
+      { status: 200, body: { claimed: true, project_slug: 'acme-api', user_email: 'me@acme.com' } },
+    ];
+    const { claimWithSession } = await import('../lib/context-auth.js');
+
+    expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk' }))
+      .toEqual({ ok: true, email: 'me@acme.com', slug: 'acme-api' });
+    expect(claimCalls).toBe(3);
+    expect(claimBodies).toEqual(Array(3).fill({ token: 'sess', project_id: 'p1', setup_key: 'sk' }));
+  });
+
+  it.each([
+    { error: 'pending', pending: false, retry_after_ms: 1000 },
+    { error: 'private-session-token', pending: true, retry_after_ms: 1000 },
+    { error: 'pending', pending: true, retry_after_ms: 0 },
+    { error: 'pending', pending: true, retry_after_ms: '1000' },
+    { error: 'pending', pending: true, retry_after_ms: 60_001 },
+    { claimed: true, project_slug: 'not-yet-approved' },
+    null,
+  ])('does not poll or claim success for invalid 202 progress: %j', async (body) => {
+    const { claimWithSession } = await import('../lib/context-auth.js');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true, status: 202, json: async () => body,
+    });
+
+    expect(await claimWithSession({ projectId: 'p1', setupKey: 'sk', token: 'sess' }))
+      .toEqual({ ok: false, reason: 'invalid-progress' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops on an expired session after pending and clears the matching cache', async () => {
+    await saveSession();
+    const { claimWithSession, loadAccountToken } = await import('../lib/context-auth.js');
+    vi.useFakeTimers();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({
+        ok: true, status: 202,
+        json: async () => ({ error: 'pending', pending: true, retry_after_ms: 1000 }),
+      })
+      .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ error: 'session_invalid' }) });
+
+    const result = claimWithSession({ projectId: 'p1', setupKey: 'sk' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await result).toEqual({ ok: false, reason: 'session_invalid' });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(loadAccountToken()).toBeNull();
+  });
+
+  it('does not reset the single recovery retry after pending responses', async () => {
+    const { claimWithSession } = await import('../lib/context-auth.js');
+    vi.useFakeTimers();
+    const failure = { ok: false, status: 503, json: async () => ({ error: 'private-session-token' }) };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(failure)
+      .mockResolvedValueOnce({
+        ok: true, status: 202,
+        json: async () => ({ error: 'pending', pending: true, retry_after_ms: 1000 }),
+      })
+      .mockResolvedValueOnce(failure);
+
+    const result = claimWithSession({ projectId: 'p1', setupKey: 'sk', token: 'sess' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await result).toEqual({ ok: false, reason: 'http-503' });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('bounds each complete request to 70 seconds without returning exception content', async () => {
+    const { claimWithSession } = await import('../lib/context-auth.js');
+    vi.useFakeTimers();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => ({
+      ok: true, status: 200,
+      json: () => new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(new Error('private-session-token')), { once: true });
+      }),
+    }));
+    let settled = false;
+    const result = claimWithSession({ projectId: 'p1', setupKey: 'sk', token: 'sess' })
+      .then((value) => { settled = true; return value; });
+    await vi.advanceTimersByTimeAsync(69_999);
+    expect(settled).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(await result).toEqual({ ok: false, reason: 'unreachable' });
+  });
+
+  it('stops pending screening within the two-hour total budget', async () => {
+    const { claimWithSession } = await import('../lib/context-auth.js');
+    vi.useFakeTimers();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true, status: 202,
+      json: async () => ({ error: 'pending', pending: true, retry_after_ms: 60_000 }),
+    });
+    const result = claimWithSession({ projectId: 'p1', setupKey: 'sk', token: 'sess' });
+    await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1000);
+    expect(await result).toEqual({ ok: false, reason: 'screening-timeout' });
+    expect(fetchSpy).toHaveBeenCalledTimes(120);
   });
 
   it('drops a session the server rejects, so the next run signs in fresh', async () => {
