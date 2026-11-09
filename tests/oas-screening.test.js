@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
 
 import { OAS_SCREENING_WAIT_MS, OAS_UPLOAD_TIMEOUT_MS, postOas } from '../lib/oas-upload.js';
 
@@ -15,6 +16,18 @@ const interruptedRequest = (_url, init) => new Promise((_resolve, reject) =>
 afterEach(() => vi.useRealTimers());
 
 describe('authenticated OAS screening', () => {
+  it('declares the published resume protocol implemented by authenticated requests', async () => {
+    const manifest = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const lock = JSON.parse(fs.readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'));
+    expect(manifest.version).toBe('0.13.0');
+    expect(lock.version).toBe(manifest.version);
+    expect(lock.packages[''].version).toBe(manifest.version);
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    await upload({ fetchImpl });
+    expect(String(manifest.restless.knowledgeResumeProtocol))
+      .toBe(fetchImpl.mock.calls[0][1].headers['X-Restless-Knowledge-Resume']);
+  });
+
   it('opts in, adopts replacement IDs and never re-uploads raw specs while polling', async () => {
     vi.useFakeTimers();
     const replacement = 'b'.repeat(64);
