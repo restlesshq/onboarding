@@ -151,6 +151,91 @@ describe('inspectCandidate', () => {
   });
 });
 
+describe('inspectCandidate: obfuscated, encoded and personal data', () => {
+  const fake = (...parts) => parts.join('');
+  const email = fake('priya', '@', 'acme-corp', '.io');
+
+  it.each([
+    ['a spelled-out email', 'Write to priya dot shah at acme dot com for access.'],
+    ['a bracketed email', 'Write to priya[at]acme[dot]com for access.'],
+    ['a zero-width split email', `Write to ${email.replace('@', '\u200B@\u200B')}.`],
+    ['a full-width email', 'Write to ｐｒｉｙａ＠ａｃｍｅ．ｃｏｍ today.'],
+    ['a hex email', `Payload ${Buffer.from(email).toString('hex')} is decoded server side.`],
+    ['a percent-encoded email', 'Payload priya%40acme%2Ecom is decoded server side.'],
+    ['a phone number', 'Call +1 (415) 555-2671 to raise the limit.'],
+    ['a national ID', 'The holder SSN 123-45-6789 is attached.'],
+    ['URL credentials', 'Fetch https://bot:s3cretpass@api.acme.com/v1/export nightly.'],
+    ['a high-entropy token', `Use ${fake('q8Zr2LmX9vKp', '4TnW7bYc1HsJ6dFg3Ae5')} as the seed.`],
+    ['a hex hash', `Hash ${fake('9f86d081884c7d659a2feaa0', 'c55ad015a3bf4f1b2b0b822c')} matched.`],
+  ])('rejects %s', (_label, content) => {
+    expect(inspectCandidate({ title: 'Data', content }).safe).toBe(false);
+  });
+
+  // Grouped digits also look like a phone number, so each asserts its OWN rule fired.
+  it.each([
+    ['a card number', 'Card 4111 1111 1111 1111 was declined.', 'contains a payment card number'],
+    ['an ungrouped card number', 'Card 4111111111111111 was declined.', 'contains a payment card number'],
+    ['an IBAN', 'Payouts go to DE89 3704 0044 0532 0130 00.', 'contains a bank account number'],
+  ])('rejects %s with its own reason', (_label, content, reason) => {
+    expect(inspectCandidate({ title: 'Data', content }).reasons).toContain(reason);
+  });
+
+  // Asserts the decoder's own reason: the entropy rule may also fire on a long payload.
+  it.each([
+    ['a base64 email', Buffer.from(fake('jane', '@', 'acme.com')).toString('base64')],
+    ['a base64 Stripe key', Buffer.from(fake('sk', '_live_', '4eC39HqLyjWDarjtT1zdp7dc')).toString('base64')],
+  ])('catches %s by decoding it', (_label, encoded) => {
+    expect(inspectCandidate({ title: 'Payload', content: `Payload ${encoded} here.` }).reasons).toContain(
+      'hides a secret or personal detail in an encoded string',
+    );
+  });
+
+  it.each([
+    ['an HMAC helper name', 'Call verifyWebhookSignatureHmacSha256 on each delivery.'],
+    ['an algorithm header constant', 'Read RESTLESS_HMAC_SHA256_SIGNING_SECRET_HEADER first.'],
+    ['an acronym and version', 'Call parseXMLDocumentFromS3Bucket2 to import.'],
+  ])('passes %s', (_label, content) => {
+    expect(inspectCandidate({ title: 'Docs', content }).safe).toBe(true);
+  });
+
+  it('does not mistake a random key with long letter runs for a name', () => {
+    expect(inspectCandidate({ title: 'Seed', content: `Seed ${fake('Xqzvbt7Rkmpw', '2Hnlqd5Tfgwx')}.` }).safe).toBe(false);
+  });
+
+  it('withholds nearly every random 32-character key', () => {
+    let seed = 42;
+    const next = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let passed = 0;
+    for (let i = 0; i < 1000; i++) {
+      let key = '';
+      for (let j = 0; j < 32; j++) key += abc[Math.floor(next() * abc.length)];
+      if (!/\d/.test(key)) key = `${key.slice(0, 31)}7`;
+      if (inspectCandidate({ title: 'Seed', content: `Seed ${key}.` }).safe) passed++;
+    }
+    expect(passed).toBeLessThanOrEqual(5);
+  });
+
+  it('lets the Luhn check decide: a near-miss number is not a card', () => {
+    expect(inspectCandidate({ title: 'Docs', content: 'Order 4111111111111112 shipped.' }).safe).toBe(true);
+  });
+
+  it('catches an Anthropic key under the generic key rule', () => {
+    const key = fake('sk', '-ant-', 'api03-', 'abcdefghijklmnop');
+    expect(inspectCandidate({ title: 'Env', content: `Set ${key}.` }).reasons).toContain('contains an API key');
+  });
+
+  it.each([
+    ['an RFC 2606 example address', 'Use user@example.com as the sandbox login.'],
+    ['an ISO date', 'Removed after 2027-01-01.'],
+    ['a long identifier', 'Call getOrganizationMembersByRole to list members.'],
+    ['an env var name with a digit', 'Set RESTLESS_OAUTH2_CLIENT_CREDENTIALS_ENDPOINT in your env.'],
+    ['a versioned method name', 'Call listOrganizationWebhookEndpointsByStatusV2 to page.'],
+  ])('passes %s', (_label, content) => {
+    expect(inspectCandidate({ title: 'Docs', content }).safe).toBe(true);
+  });
+});
+
 describe('screenCandidates', () => {
   it('splits a batch and reports titles + reasons for what it held back', () => {
     const { safe, withheld } = screenCandidates([
